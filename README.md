@@ -3,7 +3,7 @@
 A transparent, no-snake-oil replacement for Avast Cleanup Premium / CCleaner for Windows 10/11.
 Two PowerShell files, no install required, no ads, no telemetry, everything logged and reversible.
 
-> **Status: beta (v2.2.1).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
+> **Status: beta (v2.3.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
 > uninstall leftovers, services, privacy changes) and the weekly task are new - leave "create a restore point"
 > switched on (default) and review every list before you click. Use at your own risk; see LICENSE.
 
@@ -15,6 +15,12 @@ Windows 10 or 11, Windows PowerShell 5.1 (built in), administrator rights. winge
 2. Double-click `CleanIT.vbs` (or `Run-CleanIT.bat`) and approve the UAC prompt.
 3. CleanIT opens in its own app window. On the **Dashboard** click **Smart Scan**, then **Clean ...**.
 4. Optional: **Settings > Install** adds Start menu + desktop shortcuts (copies to `C:\ProgramData\CleanIT`).
+
+## Updates
+CleanIT checks this GitHub repository for new releases (at most every 6 hours) and shows an **Update now** banner.
+Updates are downloaded over HTTPS from this repo only, checked (all files present, not damaged, version matches) and the
+previous version is kept in `Backups\app-<version>`. Optional: **Settings > Updates > Install updates automatically** lets
+the weekly clean update every PC in your fleet by itself. Command line: `.\CleanIT.ps1 -Update`.
 
 ## How the app works
 The interface is a local web app: `CleanIT.ps1` starts a tiny server on `127.0.0.1` (this PC only, random port)

@@ -36,6 +36,12 @@ Roadmap: `ROADMAP.md`.
   the publisher/first-word folder). Fuzzy matching was tested and produced dangerous false positives.
 - Fleet: `Settings.FleetPath`; each run writes `<COMPUTERNAME>.json`. "Add a PC" = `New-FleetSetup` (copy of the app +
   fleet.json with `%OneDrive%` token + "Install CleanIT on this PC.bat" -> `CleanIT.ps1 -JoinFleet fleet.json`).
+- Updater: `Install-CleanITUpdate` downloads the latest GitHub release zip (repo is fixed in `$script:UpdateRepo`), verifies
+  (AppFiles present, every .ps1 parses, version string matches the tag), backs up to `Backups\app-<ver>`, copies into DataDir,
+  refreshes shortcuts/task, then the server starts the new copy which replaces the running one. `CLEANIT_FAKE_VERSION` = test hook.
+  Releasing = bump `$script:Version` + README status, commit, push, `gh release create vX.Y.Z --notes-file`.
+- Folder ACL: `Protect-DataDir` locks the folder only and `icacls /reset`s children to inherit (never `/T` with (OI)(CI)
+  grants - that left files with an empty DACL in v2.0-2.2). session.json stays admin-only.
 - Weekly task runs as SYSTEM: `-Clean -Silent -NoRestorePoint -Scheduled`; then starts `CleanIT Notify` (Users group).
 
 ## Hard rules

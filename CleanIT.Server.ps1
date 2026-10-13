@@ -504,6 +504,23 @@ $script:Actions = @{
             [pscustomobject]@{ removed = $done }
         } }
 
+    updateCheck = @{ Name = 'Checking for CleanIT updates'
+        Prep = { param($A) @{ Force = [bool]$A.force } }
+        Work = { param($P) Get-UpdateInfo -Force:$P.Force } }
+
+    updateInstall = @{ Name = 'Updating CleanIT'
+        Work = { param($P) Install-CleanITUpdate }
+        Finalize = {
+            param($Out)
+            $res = $Out | Select-Object -Last 1
+            if (-not $res -or -not $res.Path) { return [pscustomobject]@{ updated = $false } }
+            $path = [string]$res.Path
+            # Start the new version a few seconds from now; it replaces this (older) running copy and opens a new window.
+            $cmd = "Start-Sleep -Seconds 4; & '" + $path.Replace("'", "''") + "'"
+            Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $cmd
+            [pscustomobject]@{ updated = $true; version = [string]$res.Version }
+        } }
+
     restorePointNow = @{ Name = 'Creating restore point'; Work = { param($P) [void](New-CleanITRestorePoint 'Manual restore point') } }
     enableProtection = @{ Name = 'Turning on System Protection'
         Work = { param($P) Enable-SystemProtection }
@@ -619,7 +636,7 @@ function Get-AppState {
     [pscustomobject]@{
         version = $script:Version; computer = $env:COMPUTERNAME; settings = $s; isAdmin = (Test-Admin)
         protection = $script:Protection; restorePointMade = $script:RestorePointMade; schedule = (Test-Schedule)
-        fleet = (Get-FleetStatus); winget = (Test-Winget); dataDir = $script:DataDir; logDir = $script:LogDir
+        fleet = (Get-FleetStatus); winget = (Test-Winget); update = (Get-UpdateInfo -CacheOnly); dataDir = $script:DataDir; logDir = $script:LogDir
         places = @($drives + $places); userProfile = $env:USERPROFILE
         categories = @($script:CategoryDefs | ForEach-Object {
             [pscustomobject]@{ key = $_.Key; name = $_.Name; description = $_.Description; group = $_.Group; default = $_.Default; deep = $_.Deep; warning = $_.Warning } })
@@ -806,6 +823,8 @@ function Invoke-Api {
                 $s = Get-Settings
                 if ($null -ne $body.RestorePoint) { $s.RestorePoint = [bool]$body.RestorePoint }
                 if ($null -ne $body.ShowMicrosoft) { $s.ShowMicrosoft = [bool]$body.ShowMicrosoft }
+                if ($null -ne $body.UpdateCheck) { $s.UpdateCheck = [bool]$body.UpdateCheck }
+                if ($null -ne $body.AutoUpdate) { $s.AutoUpdate = [bool]$body.AutoUpdate }
                 if ($null -ne $body.WingetExclude) {
                     $s.WingetExclude = @($body.WingetExclude | Where-Object { Test-SafeId $_ '^[A-Za-z0-9][A-Za-z0-9._+\-]{0,120}$' })
                 }
@@ -883,6 +902,7 @@ function Start-CleanITServer {
     $script:LoginTokens = @{}
     $script:MasterSecret = New-Secret
     $script:SessionCookie = New-Secret
+    if ((Test-Admin) -and -not $env:CLEANIT_DATADIR) { try { Protect-DataDir } catch {} }   # repairs files locked by v2.0-2.2
     $script:Protection = Test-SystemProtection
     Initialize-Native
 

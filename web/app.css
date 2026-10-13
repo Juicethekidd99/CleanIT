@@ -188,3 +188,8 @@ pre.report { margin: 0; font: 13px/1.55 Consolas, "Cascadia Mono", monospace; wh
   border-left: 4px solid var(--accent-2); animation: pop .18s ease-out; }
 .toast.error { border-left-color: #f87171; } .toast.warn { border-left-color: #fbbf24; }
 @keyframes pop { from { transform: translateY(8px); opacity: 0; } }
+
+/* update banner + release notes */
+.update-banner { display: flex; align-items: center; gap: 10px; border-color: var(--accent-2); background: var(--accent-soft); padding: 12px 18px; }
+.update-banner .t { flex: 1; }
+pre.notes { white-space: pre-wrap; font: 13px/1.5 "Segoe UI", system-ui, sans-serif; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; max-height: 50vh; overflow: auto; margin: 8px 0 0; }

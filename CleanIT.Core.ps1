@@ -3,8 +3,9 @@
 # every system change is reversible and its previous state is recorded under DataDir\State.
 
 $script:AppName     = 'CleanIT'
-$script:Version     = '2.2.1'
+$script:Version     = '2.3.0'
 $script:CorePath    = $PSCommandPath
+if ($env:CLEANIT_FAKE_VERSION) { $script:Version = $env:CLEANIT_FAKE_VERSION }   # updater tests only
 $script:DataDir     = $env:CLEANIT_DATADIR
 if (-not $script:DataDir) { $script:DataDir = Join-Path $env:ProgramData 'CleanIT' }
 $script:StateDir    = Join-Path $script:DataDir 'State'
@@ -797,6 +798,8 @@ function Get-DefaultSettings {
         FleetPath       = ''            # shared folder for multi-PC reports
         WingetExclude   = @()           # winget IDs never auto-updated
         ShowMicrosoft   = $false        # show Microsoft tasks/services in Startup
+        UpdateCheck     = $true         # look for a newer CleanIT on GitHub (at most every 6 h)
+        AutoUpdate      = $false        # install updates automatically during the weekly clean
     }
 }
 
@@ -2896,13 +2899,112 @@ function Find-DuplicateFiles {
 }
 
 # ---------------------------------------------------------------------------
+# Self-update from this project's GitHub releases (HTTPS, fixed repository, verified before install)
+# ---------------------------------------------------------------------------
+$script:UpdateRepo = 'Juicethekidd99/CleanIT'
+
+function Get-LatestRelease {
+    Invoke-WithTimeout 'Update check' {
+        param($Repo)
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $raw = (Invoke-WebRequest -UseBasicParsing -Uri "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 20 `
+                 -Headers @{ 'User-Agent' = 'CleanIT-Updater'; 'Accept' = 'application/vnd.github+json' }).Content
+        $r = $raw | ConvertFrom-Json
+        $tag = [string]$r.tag_name
+        [pscustomobject]@{ Tag = $tag; Version = $tag.TrimStart('v', 'V'); Notes = [string]$r.body; Published = [string]$r.published_at
+                           Url = [string]$r.html_url; Zip = "https://github.com/$Repo/archive/refs/tags/$tag.zip" }
+    } 30 $null @($script:UpdateRepo)
+}
+
+function Get-UpdateInfo {
+    param([switch]$Force, [switch]$CacheOnly)
+    $file = Get-StatePath 'update'
+    $c = Read-JsonFile $file
+    $rel = $c
+    $err = $null
+    $fresh = $false
+    if ($c -and $c.Checked) { try { $fresh = ((Get-Date) - [datetime]$c.Checked).TotalHours -lt 6 } catch {} }
+    if (-not $CacheOnly -and ($Force -or -not $fresh)) {
+        $l = Get-LatestRelease
+        if ($l -and $l.Tag -match '^v?\d+(\.\d+){1,3}$') {
+            $rel = [pscustomobject]@{ Checked = (Get-Date).ToString('s'); Latest = $l.Version; Tag = $l.Tag; Notes = $l.Notes
+                                      Published = $l.Published; Url = $l.Url; Zip = $l.Zip }
+            Write-JsonFile $file $rel
+        }
+        else { $err = 'Could not reach GitHub - check your internet connection.' }
+    }
+    $avail = $false
+    if ($rel -and $rel.Latest) { try { $avail = [version]$rel.Latest -gt [version]$script:Version } catch {} }
+    [pscustomobject]@{
+        Current = $script:Version; Latest = $(if ($rel) { $rel.Latest } else { $null }); Available = $avail
+        Notes = $(if ($rel) { $rel.Notes } else { '' }); Published = $(if ($rel) { $rel.Published } else { $null })
+        Url = $(if ($rel) { $rel.Url } else { $null }); Zip = $(if ($rel) { $rel.Zip } else { $null })
+        Checked = $(if ($rel) { $rel.Checked } else { $null }); Error = $err
+    }
+}
+
+# Downloads, verifies and installs the latest release into the installed copy (DataDir).
+# Returns { Path, Version } of the installed update, or $null when already up to date.
+function Install-CleanITUpdate {
+    $u = Get-UpdateInfo -Force
+    if ($u.Error) { throw $u.Error }
+    if (-not $u.Available) { Write-Log "CleanIT is up to date ($($u.Current))." 'OK'; return $null }
+    $repoRx = [regex]::Escape($script:UpdateRepo)
+    if ($u.Zip -notmatch "^https://github\.com/$repoRx/archive/refs/tags/v?[\d.]+\.zip$") { throw 'Unexpected download address - update cancelled.' }
+    $work = Join-Path $script:DataDir 'Updates'
+    if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+    New-Item -ItemType Directory -Path $work -Force | Out-Null
+    $zip = Join-Path $work "CleanIT-$($u.Latest).zip"
+    Write-Log "Downloading CleanIT $($u.Latest) from GitHub..."
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -UseBasicParsing -Uri $u.Zip -OutFile $zip -TimeoutSec 180 -Headers @{ 'User-Agent' = 'CleanIT-Updater' } -ErrorAction Stop
+    $ex = Join-Path $work 'x'
+    Expand-Archive -LiteralPath $zip -DestinationPath $ex -Force -ErrorAction Stop
+    $core = Get-ChildItem -LiteralPath $ex -Recurse -Filter 'CleanIT.Core.ps1' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $core) { throw 'The download does not contain CleanIT - update cancelled.' }
+    $src = $core.DirectoryName
+    # verify before touching anything
+    foreach ($f in $script:AppFiles) { if (-not (Test-Path -LiteralPath (Join-Path $src $f))) { throw "The download is missing $f - update cancelled." } }
+    foreach ($p in @(Get-ChildItem -LiteralPath $src -Filter '*.ps1')) {
+        $e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile($p.FullName, [ref]$null, [ref]$e)
+        if ($e.Count) { throw "$($p.Name) in the download is damaged - update cancelled." }
+    }
+    $m = [regex]::Match([IO.File]::ReadAllText($core.FullName), "\`$script:Version\s*=\s*'([^']+)'")
+    if (-not $m.Success -or $m.Groups[1].Value -ne $u.Latest) { throw "The download says version '$($m.Groups[1].Value)', expected $($u.Latest) - update cancelled." }
+    Get-ChildItem -LiteralPath $src -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
+    # keep the current version so it can be put back by hand
+    $bk = Join-Path $script:BackupDir "app-$($script:Version)"
+    foreach ($f in $script:AppFiles) {
+        $s = Join-Path $script:DataDir $f
+        if (Test-Path -LiteralPath $s) { $d = Join-Path $bk $f; New-Item -ItemType Directory -Path (Split-Path -Parent $d) -Force | Out-Null; Copy-Item -LiteralPath $s -Destination $d -Force }
+    }
+    [void](Copy-AppFiles $src)
+    if (-not $env:CLEANIT_DATADIR) {   # test runs must never touch the real shortcuts or weekly task
+        if (Test-Path -LiteralPath (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\CleanIT.lnk')) {
+            try { Install-CleanITApp $script:DataDir } catch { Write-Log "Shortcuts not refreshed: $($_.Exception.Message)" 'WARN' }
+        }
+        if (Test-Schedule) { try { Install-Schedule $script:DataDir } catch { Write-Log "Weekly task not refreshed: $($_.Exception.Message)" 'WARN' } }
+    }
+    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Log "CleanIT updated from $($script:Version) to $($u.Latest). The previous version is kept in $bk." 'OK'
+    [pscustomobject]@{ Path = (Join-Path $script:DataDir 'CleanIT.ps1'); Version = $u.Latest }
+}
+
+
+# ---------------------------------------------------------------------------
 # Scheduling, notifications, install, migration
 # ---------------------------------------------------------------------------
 function Test-Schedule { [bool](Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue) }
 
 function Protect-DataDir {
     # Scripts here run as SYSTEM - only admins/SYSTEM may change them, users may read.
-    & icacls.exe $script:DataDir /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' /T /C /Q 2>&1 | Out-Null
+    # Lock the FOLDER only, then make everything inside inherit it. (v2.0-2.2 applied the folder rules to
+    # files with /T, which left the files with no permissions at all - this also repairs those.)
+    & icacls.exe $script:DataDir /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' /C /Q 2>&1 | Out-Null
+    & icacls.exe (Join-Path $script:DataDir '*') /reset /T /C /Q 2>&1 | Out-Null
+    # the running app's session secret stays admin-only
+    $sess = Join-Path $script:StateDir 'session.json'
+    if (Test-Path -LiteralPath $sess) { & icacls.exe $sess /inheritance:r /grant:r '*S-1-5-32-544:F' '*S-1-5-18:F' /C /Q 2>&1 | Out-Null }
 }
 
 $script:AppFiles = @('CleanIT.ps1', 'CleanIT.Core.ps1', 'CleanIT.Server.ps1', 'CleanIT.vbs', 'Run-CleanIT.bat',

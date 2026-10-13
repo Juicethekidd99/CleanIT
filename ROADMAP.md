@@ -25,6 +25,7 @@ and skip the snake oil.
 - [x] Timeouts around every system query that can hang
 - [x] Drivers page: official NVIDIA latest-driver check, problem devices, BIOS age, older drivers, old driver package cleanup
 - [x] App window has CleanIT's own taskbar identity/icon
+- [x] v2.3.0: built-in updater from GitHub releases (+ optional auto-update in the weekly clean); fixed install-folder permissions
 
 ## Phase 4 - Packaging (next)
 - Compile to `CleanIT.exe` with PS2EXE (custom icon, requireAdmin manifest) - note: the core is dot-sourced, so either

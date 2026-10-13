@@ -49,6 +49,7 @@ param(
     [switch]$WindowsUpdates,
     [switch]$Drivers,
     [switch]$DriverCheck,
+    [switch]$Update,
     [switch]$Report,
     [switch]$Security,
     [switch]$Optimize,
@@ -80,7 +81,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 $script:SelfPath     = $MyInvocation.MyCommand.Path
 $script:AppDir       = Split-Path -Parent $script:SelfPath
 $script:IsDotSourced = $MyInvocation.InvocationName -eq '.'
-$cliSwitches = @('Scan', 'Clean', 'Updates', 'WindowsUpdates', 'Drivers', 'DriverCheck', 'Report', 'Security', 'Optimize', 'Repair', 'QuickScan',
+$cliSwitches = @('Scan', 'Clean', 'Updates', 'WindowsUpdates', 'Drivers', 'DriverCheck', 'Update', 'Report', 'Security', 'Optimize', 'Repair', 'QuickScan',
                  'LargeFiles', 'Duplicates', 'Privacy', 'UndoPrivacy', 'UndoStartup', 'ListCategories', 'ListBloat',
                  'InstallSchedule', 'RemoveSchedule', 'Install', 'Uninstall', 'Fleet')
 $script:IsCli = @($cliSwitches | Where-Object { $PSBoundParameters[$_] }).Count -gt 0
@@ -163,6 +164,15 @@ if ($InstallSchedule) { Install-Schedule $script:AppDir }
 if ($RemoveSchedule)  { Remove-Schedule }
 if ($UndoPrivacy)     { Restore-AllPrivacy }
 if ($UndoStartup)     { Undo-AllStartupChanges }
+
+if ($Update) {
+    try { $new = Install-CleanITUpdate; if ($new) { Write-Log 'Update installed - open CleanIT again to use the new version.' 'OK' } }
+    catch { Write-Log "Update failed: $($_.Exception.Message)" 'ERROR' }
+}
+# Weekly task: optional self-update before cleaning (the files on disk are replaced; this run keeps going on the loaded code)
+if ($Scheduled -and $settings.AutoUpdate) {
+    try { [void](Install-CleanITUpdate) } catch { Write-Log "Automatic update skipped: $($_.Exception.Message)" 'WARN' }
+}
 
 $rpWanted = $settings.RestorePoint -and -not $NoRestorePoint
 if ($Privacy) {

@@ -93,12 +93,12 @@ async function api(path, body) {
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 }
-function offline(expired) {
+function offline(expired, title, text) {
   if (S.offline) return;
   S.offline = true;
   document.body.replaceChildren(h('div', { class: 'empty', style: 'padding-top:20vh' },
-    h('h2', {}, expired ? 'This window has expired' : 'CleanIT has stopped'),
-    h('p', {}, 'Close this window and open CleanIT again from its shortcut.')));
+    h('h2', {}, title || (expired ? 'This window has expired' : 'CleanIT has stopped')),
+    h('p', {}, text || 'Close this window and open CleanIT again from its shortcut.')));
 }
 // Runs a server action as a background job and resolves with its result.
 async function run(action, args, onProgress) {
@@ -144,6 +144,8 @@ function render() {
   const p = pages[S.page] || pages.dashboard;
   $('#page-title').textContent = p.title;
   const root = h('div');
+  const up = S.state.update;
+  if (up && up.Available && !S.updateDismissed) root.append(updateBanner(up));
   try { p.render(root); } catch (e) { root.append(h('div', { class: 'notice warn', text: 'Something went wrong: ' + e.message })); console.error(e); }
   const scroll = $('#page').scrollTop;
   $('#page').replaceChildren(root);
@@ -1001,7 +1003,9 @@ pages.fleet = {
         h('div', { class: 'top' }, ring(r.Score, 64),
           h('div', { style: 'flex:1' }, h('h4', {}, r.Computer, me ? h('span', { class: 'pill accent', style: 'margin-left:8px', text: 'this PC' }) : null),
             h('div', { class: 'small ' + (stale ? 'c-WARN' : 'muted'), text: 'Report ' + fmtAgo(r.Time) + (stale ? ' - not seen for a while' : '') }),
-            h('div', { class: 'small muted', text: (r.OS || '') + (r.Build ? ' (' + r.Build + ')' : '') }))),
+            h('div', { class: 'small muted', text: (r.OS || '') + (r.Build ? ' (' + r.Build + ')' : '') }),
+            h('div', { class: 'small' }, h('span', { class: 'muted', text: 'CleanIT ' + (r.Version || '?') + ' ' }),
+              S.state.update && S.state.update.Latest && r.Version && newer(S.state.update.Latest, r.Version) ? h('span', { class: 'pill WARN', text: 'update available' }) : null))),
         h('dl', {},
           h('dt', { text: 'Free on C:' }), h('dd', { class: r.FreePct < 10 ? 'c-BAD' : r.FreePct < 20 ? 'c-WARN' : '', text: fmtSize(r.FreeBytes) + ' (' + r.FreePct + '%)' }),
           h('dt', { text: 'Freed by CleanIT' }), h('dd', { text: fmtSize(r.FreedTotal) }),
@@ -1072,6 +1076,7 @@ pages.settings = {
           checkbox('Also update apps (winget)', sc.updates, v => sc.updates = v),
           h('span', { class: 'spacer' }),
           btn('Save schedule', () => task('sched', async () => { await run('scheduleSave', sc); await refreshState(); toast(sc.enabled ? 'Weekly clean scheduled.' : 'Weekly clean turned off.'); }), 'primary', 'sched'))),
+      updatesCard(st),
       h('div', { class: 'card' }, h('h3', {}, 'Undo center'),
         h('div', { class: 'row' },
           btn('Undo startup changes', () => go('startup')),
@@ -1125,6 +1130,63 @@ async function pollLog() {
 }
 async function refreshState() { S.state = await api('/api/state'); render(); }
 
+// ---------------------------------------------------------------------------
+// Updates (from this project's GitHub releases)
+// ---------------------------------------------------------------------------
+function newer(a, b) {
+  const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d > 0; }
+  return false;
+}
+function updateBanner(up) {
+  return h('div', { class: 'card update-banner' },
+    h('div', { class: 't' }, h('b', { text: 'CleanIT ' + up.Latest + ' is available' }), h('span', { class: 'muted', text: '  -  you have ' + up.Current })),
+    btn('What\'s new', () => showReleaseNotes(up), 'link'),
+    btn('Update now', updateNow, 'primary', 'update'),
+    btn('Later', () => { S.updateDismissed = true; render(); }, 'link'));
+}
+function showReleaseNotes(up) {
+  return dialog('What\'s new in CleanIT ' + up.Latest, h('pre', { class: 'notes', text: up.Notes || 'No release notes.' }), [{ id: 'x', text: 'Close' }], true);
+}
+async function checkUpdates(force) {
+  const r = await run('updateCheck', { force: !!force });
+  S.state.update = r;
+  if (force) {
+    if (r.Error) toast(r.Error, 'error');
+    else toast(r.Available ? 'CleanIT ' + r.Latest + ' is available.' : 'CleanIT is up to date (' + r.Current + ').');
+  }
+  render();
+}
+async function updateNow() {
+  const up = S.state.update;
+  const ok = await confirmBox('Update CleanIT to ' + up.Latest + '?', [
+    h('p', { text: 'CleanIT downloads the new version from GitHub, checks it, installs it and reopens itself. Your settings, history and fleet stay as they are. The current version is kept as a backup.' }),
+    up.Notes ? h('pre', { class: 'notes', text: up.Notes }) : null], 'Update now');
+  if (!ok) return;
+  const r = await task('update', () => run('updateInstall', {}, prog('update')));
+  if (r && r.updated) {
+    offline(false, 'Updating to CleanIT ' + r.version + '...', 'CleanIT will open again in a new window in a few seconds. You can close this one.');
+  } else if (r) { toast('CleanIT is already up to date.'); refreshState(); }
+}
+function updatesCard(st) {
+  const s = st.settings, up = st.update || {};
+  return h('div', { class: 'card' }, h('h3', {}, 'Updates'),
+    h('div', { class: 'row', style: 'margin-bottom:6px' },
+      h('span', { text: 'You have CleanIT ' + st.version + '.' }),
+      up.Latest ? h('span', { class: up.Available ? 'c-WARN' : 'muted', text: up.Available ? 'Version ' + up.Latest + ' is available.' : 'That is the latest version.' }) : null,
+      up.Checked ? h('span', { class: 'muted small', text: '(checked ' + fmtAgo(up.Checked) + ')' }) : null,
+      h('span', { class: 'spacer' }),
+      btn('Check now', () => task('updCheck', () => checkUpdates(true)), '', 'updCheck'),
+      up.Available ? btn('Update now', updateNow, 'primary', 'update') : null,
+      up.Url ? btn('Release notes', () => showReleaseNotes(up), 'link') : null),
+    h('div', { class: 'opt' }, toggle(s.UpdateCheck !== false, v => saveSettings({ UpdateCheck: v }).then(render)),
+      h('div', { class: 't' }, h('b', { text: 'Check for updates when CleanIT opens' }), h('div', { text: 'Looks at github.com/Juicethekidd99/CleanIT at most every 6 hours. Nothing is installed without asking.' }))),
+    h('div', { class: 'opt' }, toggle(!!s.AutoUpdate, v => saveSettings({ AutoUpdate: v }).then(render)),
+      h('div', { class: 't' }, h('b', { text: 'Install updates automatically during the weekly clean' }),
+        h('div', { text: 'Keeps every PC in your fleet current without you touching it. Only downloads from your GitHub repository, and checks the files before installing. Protect your GitHub account with two-factor login if you turn this on.' }))),
+    progLine('update'));
+}
+
 async function init() {
   $('#drawer-head').addEventListener('click', () => $('#drawer').classList.toggle('collapsed'));
   try { S.state = await api('/api/state'); } catch (e) { return; }
@@ -1133,6 +1195,7 @@ async function init() {
   if (pages[hash]) S.page = hash;
   render();
   ping(); pollLog();
+  if (S.state.settings.UpdateCheck !== false) checkUpdates(false).catch(() => {});   // quiet; cached for 6 h on the server
 }
 window.addEventListener('hashchange', () => { const p = location.hash.slice(1); if (pages[p] && p !== S.page) { S.page = p; render(); } });
 init();
