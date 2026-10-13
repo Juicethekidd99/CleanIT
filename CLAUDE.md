@@ -20,7 +20,10 @@ Roadmap: `ROADMAP.md`.
   `mac/web/app.js` is a fork of `web/app.js`: same helpers and look; `api()` calls `window.webkit.messageHandlers.api`
   with the same `/api/...` paths. Engine side: `Bridge.swift` (routes + actions table), `Jobs.swift` (background jobs).
 - Engine files: `Clean.swift` (categories are data, like `$script:CategoryDefs`), `Disk.swift`, `Startup.swift`,
-  `Apps.swift`, `Updates.swift`, `Health.swift` (Security, Health, Dashboard), `Schedule.swift` (weekly LaunchAgent).
+  `Apps.swift`, `Updates.swift`, `Health.swift` (Security, Health, Dashboard), `Schedule.swift` (weekly LaunchAgent),
+  `Fleet.swift` (same `<Computer>.json` format as Write-FleetReport + `Platform: "Mac"`, `DisplayName`, `MacUpdates`;
+  `Computer` is the LocalHostName because Remove-FleetReport only accepts `[A-Za-z0-9._-]`). The Windows fleet page
+  checks `r.Platform === 'Mac'` for its labels - keep both fleet pages compatible when changing the report.
 - Mac rules: never follow symlinks; user files, apps and leftovers go to the Trash (`trashItem` / `NSWorkspace.recycle`);
   caches are deleted in place but the cache folder itself stays; skip caches of running apps (owner bundle id);
   startup changes only use `launchctl disable/enable` (never edit/delete plists) and are recorded in `State/startup.json`;

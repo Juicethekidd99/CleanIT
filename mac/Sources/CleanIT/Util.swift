@@ -49,7 +49,7 @@ func shortDate(_ d: Date?) -> String {
 enum Settings {
     static let defaults: JSON = [
         "ScheduleDay": "Sunday", "ScheduleTime": "11:00", "ScheduleUpdates": false,
-        "BrewExclude": [String](), "UpdateCheck": true
+        "BrewExclude": [String](), "UpdateCheck": true, "FleetPath": ""
     ]
     private static let lock = NSLock()
     static func load() -> JSON {

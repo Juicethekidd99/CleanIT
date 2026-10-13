@@ -10,7 +10,7 @@ enum Bridge {
     static func num(_ a: Any?, _ def: Double) -> Double { (a as? NSNumber)?.doubleValue ?? Double(a as? String ?? "") ?? def }
 
     static let actions: [String: Action] = [
-        "dashboard": ("Checking your Mac", { _, _ in Dashboard.data() }),
+        "dashboard": ("Checking your Mac", { _, _ in let d = Dashboard.data(); Fleet.writeReport(d); return d }),
         "smartScan": ("Smart Scan", { _, job in
             job.report(5, "Scanning junk")
             let scan = Clean.scan(Clean.defs.map { $0.key })
@@ -20,10 +20,11 @@ enum Bridge {
             if Updates.brew != nil { job.report(80, "Checking Homebrew"); _ = try? Updates.brewList(job: job) }
             let dash = Dashboard.data()
             Log.write("Smart Scan done: \(fmtSize(junk)) of junk found, health score \(dash["Score"]!).", "OK")
+            Fleet.writeReport(dash)
             return ["dash": dash, "junk": junk, "scan": scan]
         }),
         "junkScan": ("Scanning junk", { a, job in ["items": Clean.scan(strs(a["keys"]), job: job)] }),
-        "clean": ("Cleaning", { a, job in Clean.clean(strs(a["keys"]), job: job) }),
+        "clean": ("Cleaning", { a, job in let r = Clean.clean(strs(a["keys"]), job: job); Fleet.writeReport(); return r }),
 
         "diskScan": ("Analyzing disk space", { a, job in try Disk.scanTree(a["path"] as? String ?? "/", job: job) }),
         "largeFiles": ("Finding large files", { a, job in
@@ -54,6 +55,14 @@ enum Bridge {
             return [:] as JSON }),
         "health": ("Health report", { _, _ in ["text": Health.report()] }),
         "flushDns": ("Flushing DNS", { _, _ in try Health.flushDNS(); return [:] as JSON }),
+        "fleetList": ("Reading fleet reports", { _, _ in ["items": Fleet.reports()] }),
+        "fleetOneDrive": ("Setting up the OneDrive fleet", { _, _ in try Fleet.useOneDrive(); return [:] as JSON }),
+        "fleetSetPath": ("Setting fleet folder", { a, _ in try Fleet.setPath(a["path"] as? String ?? ""); return [:] as JSON }),
+        "fleetChoose": ("Choosing fleet folder", { _, _ in
+            guard let p = Fleet.chooseFolder() else { return ["chosen": false] as JSON }
+            try Fleet.setPath(p); return ["chosen": true] as JSON }),
+        "fleetWrite": ("Writing fleet report", { _, _ in Fleet.writeReport(); return [:] as JSON }),
+        "fleetRemove": ("Removing computer from fleet view", { a, _ in try Fleet.remove(a["computer"] as? String ?? ""); return [:] as JSON }),
         "scheduleSave": ("Saving schedule", { a, _ in
             try Schedule.save(enabled: a["enabled"] as? Bool ?? false, day: a["day"] as? String ?? "Sunday",
                               time: a["time"] as? String ?? "11:00", updates: a["updates"] as? Bool ?? false)
@@ -63,7 +72,7 @@ enum Bridge {
     static func state() -> JSON {
         let exe = Bundle.main.bundlePath
         return [
-            "version": appVersion, "computer": Host.current().localizedName ?? "This Mac", "settings": Settings.load(),
+            "version": appVersion, "computer": Fleet.computer, "computerName": Fleet.displayName, "fleet": Fleet.status(), "settings": Settings.load(),
             "schedule": Schedule.isOn, "dataDir": Paths.dataDir, "logDir": Paths.logDir,
             "places": Disk.places(), "userProfile": Paths.home, "brew": Updates.brew != nil, "fda": hasFullDiskAccess(),
             "appPath": exe, "inApplications": exe.hasPrefix("/Applications/") || exe.hasPrefix(Paths.home + "/Applications/"),
@@ -81,6 +90,7 @@ enum Bridge {
         "sharing": "x-apple.systempreferences:com.apple.Sharing-Settings.extension",
         "storage": "x-apple.systempreferences:com.apple.settings.Storage",
         "appstore": "macappstore://showUpdatesPage",
+        "onedrive": "macappstore://apps.apple.com/app/onedrive/id823766827",
     ]
 
     static func open(_ a: JSON) throws {
@@ -92,6 +102,10 @@ enum Bridge {
             DispatchQueue.main.async { ws.activateFileViewerSelecting([URL(fileURLWithPath: p)]) }
         case "logs": DispatchQueue.main.async { ws.open(URL(fileURLWithPath: Paths.logDir)) }
         case "data": DispatchQueue.main.async { ws.open(URL(fileURLWithPath: Paths.dataDir)) }
+        case "fleet":
+            let p = Fleet.path
+            guard FS.isDir(p) else { throw CleanITError("The fleet folder is not reachable.") }
+            DispatchQueue.main.async { ws.open(URL(fileURLWithPath: p)) }
         case "trash": DispatchQueue.main.async { ws.open(URL(fileURLWithPath: Paths.home + "/.Trash")) }
         case "app":
             let n = a["name"] as? String ?? ""

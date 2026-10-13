@@ -42,6 +42,7 @@ no open port.
 | Updates | macOS Software Update with Important/Recommended/Optional advice; Homebrew formulae and casks with a "never update" list |
 | Security | macOS support status, FileVault, firewall, SIP, Gatekeeper, automatic updates, XProtect, auto-login, SSH/Screen Sharing, unsigned startup items |
 | Health | Model, memory, uptime, SSD SMART, Time Machine, battery cycles/capacity, crashes and kernel panics (30 days), flush DNS |
+| Fleet | Health cards for all your Macs **and PCs** in one shared folder (OneDrive "CleanIT Fleet", or any folder you pick). Same report format as Windows, so this Mac also shows up on your PCs' Fleet page |
 | Settings | Full Disk Access status, weekly clean (LaunchAgent), undo center, logs |
 
 ## Cleanup categories
@@ -70,7 +71,13 @@ $C --list-categories
 $C --startup [--all]                        # list startup items (--all includes Apple's)
 $C --report                                 # health + security report
 $C --updates                                # Homebrew upgrades (honours the "never update" list)
+$C --fleet                                  # write this Mac's report to the fleet folder now
 ```
+
+## Fleet with your PCs
+Your PCs keep their reports in `OneDrive\CleanIT Fleet`. To add this Mac: install **OneDrive for Mac** (free, App Store),
+sign in with the same Microsoft account, then **CleanIT > Fleet > Join my fleet in OneDrive**. The Mac writes its report
+after every scan, clean and weekly clean. Not using OneDrive? **Choose a folder...** works with Dropbox, Google Drive or a NAS.
 
 ## Files
 - `~/Library/Application Support/CleanIT/` - `settings.json`, `history.json`, `State/` (startup changes, update counts)

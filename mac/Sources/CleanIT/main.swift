@@ -7,6 +7,7 @@
 //   CleanIT --report                    health + security report
 //   CleanIT --startup                   list startup items (add --all for Apple ones)
 //   CleanIT --updates                   update Homebrew apps/tools (honours the "never update" list)
+//   CleanIT --fleet                     write this Mac's report to the fleet folder now
 //   --silent: no questions, no output except errors; --scheduled: marks the run as the weekly clean and notifies.
 import AppKit
 
@@ -17,7 +18,7 @@ func value(_ s: String) -> String? { args.firstIndex(of: s).flatMap { $0 + 1 < a
 
 if let dir = value("--make-icon") { Icon.write(to: dir); exit(0) }
 
-let cli = ["--scan", "--clean", "--list-categories", "--report", "--updates", "--startup"].contains { has($0) }
+let cli = ["--scan", "--clean", "--list-categories", "--report", "--updates", "--startup", "--fleet"].contains { has($0) }
 if cli {
     Log.echo = !has("--silent")
     let keys = value("--categories").map { $0.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) } }
@@ -52,6 +53,7 @@ if cli {
             print("\((i["Enabled"] as! Bool) ? "on " : "off") \((i["Kind"] as! String).padding(toLength: 10, withPad: " ", startingAt: 0)) \((i["Name"] as! String).padding(toLength: 28, withPad: " ", startingAt: 0)) \(i["Publisher"]!)")
         }
     }
+    if has("--clean") || has("--fleet") { Fleet.writeReport() }
     if has("--report") {
         print(Health.report()); print("")
         print("SECURITY")

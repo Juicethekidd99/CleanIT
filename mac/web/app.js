@@ -129,7 +129,7 @@ const pages = {};
 const NAV = [
   ['dashboard', 'Dashboard', 'home'], ['clean', 'Clean', 'clean'], ['disk', 'Disk', 'disk'], ['startup', 'Startup', 'startup'],
   ['apps', 'Apps', 'apps'], ['updates', 'Updates', 'updates'], ['security', 'Security', 'security'],
-  ['health', 'Health', 'health'], ['settings', 'Settings', 'settings']
+  ['health', 'Health', 'health'], ['fleet', 'Fleet', 'fleet'], ['settings', 'Settings', 'settings']
 ];
 
 function go(page) { S.page = page; location.hash = page; render(); }
@@ -806,6 +806,100 @@ pages.health = {
 };
 function loadHealth() { return task('health', async () => { S.cache.health = (await run('health')).text; }); }
 
+// ----- Fleet (same shared folder and report format as the Windows version)
+pages.fleet = {
+  title: 'Fleet - all your computers',
+  render(root) {
+    const f = S.state.fleet;
+    if (f.Mode === 'off') {
+      const join = () => task('fleetSetup', async () => { await run('fleetOneDrive'); await refreshState(); S.cache.fleet = null; toast('Fleet is on - this Mac reports to OneDrive.'); });
+      root.append(h('div', { class: 'card fleet-hero' }, icon('fleet'),
+        h('div', { style: 'flex:1' },
+          h('h2', { style: 'margin:0 0 6px', text: f.Existing ? 'Join your fleet' : 'See all your computers in one place' }),
+          h('p', { class: 'muted', text: f.Existing ? 'Your PCs already share their CleanIT reports in OneDrive. Join them and this Mac shows up next to them - on every computer\'s Fleet page.' :
+            'Every computer with CleanIT (Mac or PC) writes a small health report to a shared folder. This page shows them all: health score, free space, updates and problems.' }),
+          f.OneDrive ? h('div', { class: 'row' },
+            btn(f.Existing ? 'Join my fleet in OneDrive' : 'Use my OneDrive (recommended)', join, 'primary big', 'fleetSetup'),
+            h('span', { class: 'muted small', text: 'Folder: ' + tilde(f.OneDrive) + '/CleanIT Fleet' })) :
+            h('div', { class: 'notice warn' },
+              h('div', {}, h('b', { text: 'OneDrive is not installed on this Mac. ' }), 'Your PCs keep the fleet in OneDrive. Install OneDrive for Mac (free), sign in with the same Microsoft account as your PCs, then come back here and click Check again.'),
+              h('div', { class: 'row', style: 'margin-top:10px' },
+                btn('Get OneDrive (App Store)', () => openThing('pane', { pane: 'onedrive' }), 'primary'),
+                btn('Check again', () => task('fleetCheck', refreshState), '', 'fleetCheck'))),
+          h('p', { class: 'muted small', style: 'margin-top:14px' }, 'Using Dropbox, Google Drive or a NAS instead? ',
+            btn('Choose a folder...', chooseFleetFolder, 'link', 'fleetPath')))));
+      return;
+    }
+    const items = S.cache.fleet;
+    if (!items) autoLoad('fleet', loadFleet);
+    root.append(h('div', { class: 'card' },
+      h('div', { class: 'row' },
+        h('span', { class: 'pill ' + (f.Reachable ? 'OK' : 'BAD'), text: f.Reachable ? (f.Mode === 'onedrive' ? 'OneDrive' : 'Shared folder') : 'Folder not reachable' }),
+        h('span', { class: 'muted ell', title: f.Path, text: tilde(f.Path) }),
+        h('span', { class: 'spacer' }),
+        btn('Add a computer', addComputer, 'primary'),
+        btn('Report now', () => task('fleetWrite', async () => { await run('fleetWrite'); await loadFleet(); }), '', 'fleetWrite'),
+        btn('Refresh', loadFleet, '', 'fleet'),
+        btn('Change...', changeFleet, 'link'))));
+    if (!items) { root.append(h('div', { class: 'empty', text: 'Reading reports...' })); return; }
+    if (!items.length) root.append(h('div', { class: 'empty', text: 'No reports yet - click "Report now".' }));
+    const me = r => r.Computer === S.state.computer;
+    const sorted = items.slice().sort((a, b) => me(b) - me(a) || a.Computer.localeCompare(b.Computer));
+    root.append(h('div', { class: 'pcs' }, sorted.map(r => {
+      const mac = r.Platform === 'Mac';
+      const stale = r.Time && (Date.now() - new Date(r.Time).getTime()) > 14 * 86400000;
+      const issues = (r.Issues || []).slice(0, 3);
+      return h('div', { class: 'pc' + (me(r) ? ' me' : '') },
+        h('div', { class: 'top' }, ring(r.Score, 64),
+          h('div', { style: 'flex:1' }, h('h4', {}, r.DisplayName || r.Computer, me(r) ? h('span', { class: 'pill accent', style: 'margin-left:8px', text: 'this Mac' }) : null),
+            h('div', { class: 'small ' + (stale ? 'c-WARN' : 'muted'), text: 'Report ' + fmtAgo(r.Time) + (stale ? ' - not seen for a while' : '') }),
+            h('div', { class: 'small muted', text: (r.OS || '') + (r.Build ? ' (' + r.Build + ')' : '') }),
+            h('div', { class: 'small muted', text: 'CleanIT ' + (r.Version || '?') + (mac ? ' for Mac' : ' for Windows') }))),
+        h('dl', {},
+          h('dt', { text: mac ? 'Free on disk' : 'Free on C:' }), h('dd', { class: r.FreePct < 10 ? 'c-BAD' : r.FreePct < 20 ? 'c-WARN' : '', text: fmtSize(r.FreeBytes) + ' (' + r.FreePct + '%)' }),
+          h('dt', { text: 'Freed by CleanIT' }), h('dd', { text: fmtSize(r.FreedTotal) }),
+          h('dt', { text: 'Last clean' }), h('dd', { text: fmtAgo(r.LastClean) }),
+          h('dt', { text: 'Updates waiting' }), h('dd', { text: mac ? Math.max(0, r.MacUpdates) + ' macOS, ' + Math.max(0, r.AppUpdates) + ' Homebrew' : Math.max(0, r.AppUpdates) + ' apps, ' + Math.max(0, r.WinUpdates) + ' Windows' }),
+          mac ? null : h('dt', { text: 'Restart needed' }), mac ? null : h('dd', { class: r.PendingReboot ? 'c-WARN' : '', text: r.PendingReboot ? 'yes' : 'no' })),
+        issues.length ? h('ul', {}, issues.map(i => h('li', { text: String(i).replace(/^\[(BAD|WARN|INFO)\]\s*/, '') }))) : h('div', { class: 'small c-OK', text: 'No problems reported.' }),
+        !me(r) ? h('div', { class: 'row end' }, btn('Remove from list', async () => {
+          if (!await confirmBox('Remove ' + (r.DisplayName || r.Computer) + '?', 'Removes its report from this list. If CleanIT still runs there, it will reappear after its next clean.', 'Remove')) return;
+          await task('fleetRemove', () => run('fleetRemove', { computer: r.Computer })); loadFleet();
+        }, 'link')) : null);
+    })));
+  }
+};
+function loadFleet() { return task('fleet', async () => { S.cache.fleet = (await run('fleetList')).items; }); }
+function chooseFleetFolder() {
+  return task('fleetPath', async () => { const r = await run('fleetChoose'); if (r.chosen) { S.cache.fleet = null; await refreshState(); toast('Fleet folder set.'); } });
+}
+async function changeFleet() {
+  const c = await dialog('Fleet folder', [h('p', { text: 'Currently: ' + tilde(S.state.fleet.Path) })],
+    [{ id: 'x', text: 'Close' }, { id: 'open', text: 'Show in Finder' }, { id: 'pick', text: 'Choose another folder...' }, { id: 'off', text: 'Turn fleet reporting off', cls: 'danger' }]);
+  if (c === 'open') openThing('fleet');
+  else if (c === 'pick') chooseFleetFolder();
+  else if (c === 'off') { await task('fleetPath', () => run('fleetSetPath', { path: '' })); S.cache.fleet = null; await refreshState(); }
+}
+async function addComputer() {
+  const od = S.state.fleet.Mode === 'onedrive';
+  await dialog('Add a computer to your fleet', [
+    h('h4', { text: 'Another Mac' }),
+    h('ol', { class: 'steps' },
+      h('li', {}, 'Download CleanIT for Mac on it and drag it into Applications.'),
+      od ? h('li', {}, 'Install OneDrive and sign in with the same account.') : h('li', {}, 'Make sure it can reach this folder: ' + tilde(S.state.fleet.Path)),
+      h('li', {}, 'Open CleanIT > Fleet > ', h('b', { text: od ? 'Join my fleet in OneDrive' : 'Choose a folder...' }), '.')),
+    h('h4', { text: 'A Windows PC' }),
+    h('ol', { class: 'steps' },
+      h('li', {}, 'Download CleanIT for Windows on it and open it.'),
+      h('li', {}, 'Go to Fleet > ', h('b', { text: od ? 'Use my OneDrive' : 'Use a different folder' }), (od ? ' (same OneDrive account).' : '.')),
+      h('li', {}, 'Already have a PC in the fleet? Its "Add a PC" button makes a one-click installer for the next PC.')),
+    h('p', { class: 'muted small', text: 'Each computer appears here after its next scan or clean.' })
+  ], [{ id: 'mac', text: 'Mac download link' }, { id: 'win', text: 'Windows download link' }, { id: 'x', text: 'Close', cls: 'primary' }]).then(c => {
+    if (c === 'mac') openThing('url', { url: 'https://github.com/Juicethekidd99/CleanIT/releases/latest/download/CleanIT-Mac.zip' });
+    if (c === 'win') openThing('url', { url: 'https://github.com/Juicethekidd99/CleanIT/releases/latest' });
+  });
+}
+
 // ----- Settings
 pages.settings = {
   title: 'Settings',
@@ -884,7 +978,7 @@ async function refreshState() { S.state = await api('/api/state'); render(); }
 async function init() {
   $('#drawer-head').addEventListener('click', () => $('#drawer').classList.toggle('collapsed'));
   try { S.state = await api('/api/state'); } catch (e) { offline(false, 'CleanIT could not start', e.message); return; }
-  $('#nav-foot').textContent = S.state.computer + '  -  v' + S.state.version;
+  $('#nav-foot').textContent = S.state.computerName + '  -  v' + S.state.version;
   const hash = location.hash.slice(1);
   if (pages[hash]) S.page = hash;
   render();
