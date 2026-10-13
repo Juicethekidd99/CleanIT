@@ -745,7 +745,9 @@ function Invoke-HttpClient {
     }
     if ($req.Path -eq '/api/newlogin' -and $req.Method -eq 'POST') {
         # A second launch of CleanIT asks this running instance for a new window (it knows the admin-only secret).
-        if ($req.Headers['x-cleanit-master'] -and $req.Headers['x-cleanit-master'] -eq $script:MasterSecret) { Send-Json $req @{ token = (New-LoginToken) } }
+        if ($req.Headers['x-cleanit-master'] -and $req.Headers['x-cleanit-master'] -eq $script:MasterSecret) {
+            Send-Json $req @{ token = (New-LoginToken); version = $script:Version; appDir = $script:AppDir }
+        }
         else { Send-Page $req 403 'Forbidden.' }
         return
     }
@@ -855,7 +857,18 @@ function Start-CleanITApp {
             $wc.Proxy = $null
             $wc.Headers.Add('X-CleanIT-Master', [string]$sess.Master)
             $r = $wc.UploadString("http://127.0.0.1:$($sess.Port)/api/newlogin", 'POST', '') | ConvertFrom-Json
-            if ($r.token) { Open-AppWindow "http://127.0.0.1:$($sess.Port)/login?t=$($r.token)"; return }
+            if ($r.token -and [string]$r.version -eq $script:Version -and [string]$r.appDir -eq $script:AppDir) {
+                Open-AppWindow "http://127.0.0.1:$($sess.Port)/login?t=$($r.token)"
+                return
+            }
+            # A different CleanIT version (or copy) is still running - replace it, otherwise the new page
+            # would talk to old server code ("Unknown action ...").
+            $old = Get-Process -Id ([int]$sess.Pid) -ErrorAction SilentlyContinue
+            if ($old -and $old.ProcessName -match '^powershell') {
+                Write-Log "Replacing CleanIT $($r.version) that was still running (PID $($sess.Pid)) with $($script:Version)."
+                Stop-Process -Id $old.Id -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 800
+            }
         }
         catch {}
     }

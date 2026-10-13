@@ -124,7 +124,7 @@ function openThing(what, extra) { return api('/api/open', Object.assign({ what }
 // ---------------------------------------------------------------------------
 // App state + rendering
 // ---------------------------------------------------------------------------
-const S = { page: 'dashboard', state: null, busy: {}, cache: {}, sel: {}, tab: {}, progress: {} };
+const S = { page: 'dashboard', state: null, busy: {}, failed: {}, cache: {}, sel: {}, tab: {}, progress: {} };
 const pages = {};
 const NAV = [
   ['dashboard', 'Dashboard', 'home'], ['clean', 'Clean', 'clean'], ['disk', 'Disk', 'disk'], ['startup', 'Startup', 'startup'],
@@ -152,10 +152,18 @@ function render() {
 // Wraps an async action: marks it busy (spinner, buttons disabled), re-renders, reports errors.
 async function task(key, fn) {
   if (S.busy[key]) return;
-  S.busy[key] = true; render();
+  S.busy[key] = true; S.failed[key] = false; render();
   try { return await fn(); }
-  catch (e) { toast(e.message, 'error'); }
+  catch (e) { S.failed[key] = true; toast(e.message, 'error'); }
   finally { S.busy[key] = false; S.progress[key] = null; render(); }
+}
+// Pages load their data automatically once. After a failure they wait for the user to click again
+// (otherwise every re-render would retry and stack up error messages).
+const queued = {};
+function autoLoad(key, fn) {
+  if (S.busy[key] || S.failed[key] || queued[key]) return;
+  queued[key] = true;
+  setTimeout(() => { queued[key] = false; fn(); });
 }
 function prog(key) { return j => { S.progress[key] = j.statusText || (j.progress >= 0 ? j.progress + '%' : ''); const el = document.getElementById('prog-' + key); if (el) el.textContent = S.progress[key]; }; }
 function progLine(key) { return S.busy[key] ? h('div', { class: 'muted small', id: 'prog-' + key, text: S.progress[key] || 'Working...' }) : null; }
@@ -178,6 +186,10 @@ function tabs(key, list) {
 }
 function curTab(key, def) { return S.tab[key] || def; }
 function toast(msg, kind) {
+  // the same message twice within a few seconds is shown once
+  const now = Date.now();
+  if (S.lastToast && S.lastToast.msg === msg && now - S.lastToast.at < 5000) return;
+  S.lastToast = { msg, at: now };
   const t = h('div', { class: 'toast ' + (kind || ''), text: msg });
   $('#toasts').append(t);
   setTimeout(() => t.remove(), kind === 'error' ? 8000 : 4500);
@@ -297,7 +309,7 @@ pages.dashboard = {
   title: 'Dashboard',
   render(root) {
     const d = S.cache.dash, junk = S.cache.junk;
-    if (!d && !S.busy.dash) setTimeout(loadDashboard);
+    if (!d) autoLoad('dash', loadDashboard);
     const bad = d ? d.Issues.filter(i => i.Level === 'BAD').length : 0;
     const verdict = !d ? 'Checking this PC...' : (d.Score >= 85 && !bad) ? 'This PC is in good shape' : bad ? bad + ' important problem' + (bad > 1 ? 's' : '') + ' to fix' : 'A few things could be better';
     root.append(
@@ -531,7 +543,7 @@ pages.startup = {
   title: 'Startup apps',
   render(root) {
     const items = S.cache.startup;
-    if (!items && !S.busy.startup) setTimeout(loadStartup);
+    if (!items) autoLoad('startup', loadStartup);
     const ch = S.cache.startupChanges = S.cache.startupChanges || {};
     const n = Object.keys(ch).length;
     root.append(h('div', { class: 'card' },
@@ -586,7 +598,7 @@ pages.apps = {
 };
 function appsBloat(root) {
   const items = S.cache.bloat;
-  if (!items && !S.busy.bloat) setTimeout(loadBloat);
+  if (!items) autoLoad('bloat', loadBloat);
   if (S.cache.deprov === undefined) S.cache.deprov = true;
   const sel = S.sel.bloat = S.sel.bloat || new Set();
   root.append(h('div', { class: 'card' },
@@ -636,7 +648,7 @@ async function showRemovedApps() {
 }
 function appsPrograms(root) {
   const items = S.cache.programs;
-  if (!items && !S.busy.programs) setTimeout(loadPrograms);
+  if (!items) autoLoad('programs', loadPrograms);
   const f = (S.cache.progFilter || '').toLowerCase();
   const sel = items && items.find(p => p.id === S.cache.progSel);
   root.append(h('div', { class: 'card' },
@@ -701,7 +713,7 @@ pages.drivers = {
   title: 'Drivers',
   render(root) {
     const r = S.cache.drivers;
-    if (!r && !S.busy.drivers) setTimeout(loadDrivers);
+    if (!r) autoLoad('drivers', loadDrivers);
     root.append(h('div', { class: 'card' },
       h('div', { class: 'row' },
         btn('Check again', loadDrivers, 'primary', 'drivers'),
@@ -798,7 +810,7 @@ pages.updates = {
 };
 function updApps(root) {
   const items = S.cache.winget;
-  if (!items && !S.busy.winget && S.state.winget) setTimeout(loadWinget);
+  if (!items && S.state.winget) autoLoad('winget', loadWinget);
   const excl = new Set(S.state.settings.WingetExclude || []);
   const sel = S.sel.winget = S.sel.winget || new Set();
   root.append(h('div', { class: 'card' },
@@ -863,7 +875,7 @@ pages.privacy = {
   title: 'Privacy',
   render(root) {
     const items = S.cache.privacy;
-    if (!items && !S.busy.privacy) setTimeout(loadPrivacy);
+    if (!items) autoLoad('privacy', loadPrivacy);
     const ch = S.cache.privChanges = S.cache.privChanges || {};
     const n = Object.keys(ch).length;
     root.append(h('div', { class: 'card' },
@@ -905,7 +917,7 @@ pages.security = {
   title: 'Security',
   render(root) {
     const items = S.cache.security;
-    if (!items && !S.busy.security) setTimeout(loadSecurity);
+    if (!items) autoLoad('security', loadSecurity);
     root.append(h('div', { class: 'card' }, h('div', { class: 'row' },
       btn('Check again', loadSecurity, 'primary', 'security'),
       btn('Defender quick scan', () => secFix('QuickScan'), '', 'fixQuickScan'),
@@ -936,7 +948,7 @@ pages.health = {
   title: 'Health',
   render(root) {
     const text = S.cache.health;
-    if (!text && !S.busy.health) setTimeout(loadHealth);
+    if (!text) autoLoad('health', loadHealth);
     root.append(h('div', { class: 'card' }, h('div', { class: 'row' },
       btn('Refresh', loadHealth, 'primary', 'health'),
       btn('Optimize drives', async () => { if (await confirmBox('Optimize drives?', 'SSDs get TRIM (never defragmented); hard disks get defragmented - the way Windows recommends.', 'Optimize')) task('optimize', () => run('optimize', {}, prog('optimize'))); }, '', 'optimize'),
@@ -968,7 +980,7 @@ pages.fleet = {
       return;
     }
     const items = S.cache.fleet;
-    if (!items && !S.busy.fleet) setTimeout(loadFleet);
+    if (!items) autoLoad('fleet', loadFleet);
     root.append(h('div', { class: 'card' },
       h('div', { class: 'row' },
         h('span', { class: 'pill ' + (f.Reachable ? 'OK' : 'BAD'), text: f.Reachable ? (f.Mode === 'onedrive' ? 'OneDrive' : 'Shared folder') : 'Folder not reachable' }),
