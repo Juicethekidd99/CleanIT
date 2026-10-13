@@ -41,6 +41,7 @@ const ICONS = {
   fleet: 'M3 5h8v6H3zM13 5h8v6h-8zM8 15h8v6H8zM7 11v2h10v-2M12 13v2',
   settings: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
   folder: 'M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+  chip: 'M7 7h10v10H7zM10 10h4v4h-4zM9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4',
   file: 'M6 3h8l5 5v13H6zM14 3v5h5',
   cloud: 'M7 18a5 5 0 1 1 .9-9.9A6 6 0 0 1 19 10a4 4 0 0 1 0 8z'
 };
@@ -127,7 +128,7 @@ const S = { page: 'dashboard', state: null, busy: {}, cache: {}, sel: {}, tab: {
 const pages = {};
 const NAV = [
   ['dashboard', 'Dashboard', 'home'], ['clean', 'Clean', 'clean'], ['disk', 'Disk', 'disk'], ['startup', 'Startup', 'startup'],
-  ['apps', 'Apps', 'apps'], ['updates', 'Updates', 'updates'], ['privacy', 'Privacy', 'privacy'], ['security', 'Security', 'security'],
+  ['apps', 'Apps', 'apps'], ['drivers', 'Drivers', 'chip'], ['updates', 'Updates', 'updates'], ['privacy', 'Privacy', 'privacy'], ['security', 'Security', 'security'],
   ['health', 'Health', 'health'], ['fleet', 'Fleet', 'fleet'], ['settings', 'Settings', 'settings']
 ];
 
@@ -693,6 +694,97 @@ async function leftoversDialog(name, hits) {
   const c = await dialog('Leftovers of ' + name, wrap, [{ id: 'x', text: 'Close' }, { id: 'rm', text: 'Remove ticked', cls: 'danger' }], true);
   if (c !== 'rm' || !S.sel.left.size) return;
   await task('leftoversRemove', async () => { const r = await run('leftoversRemove', { paths: [...S.sel.left] }); toast(r.removed.length + ' leftover(s) removed.'); });
+}
+
+// ----- Drivers
+pages.drivers = {
+  title: 'Drivers',
+  render(root) {
+    const r = S.cache.drivers;
+    if (!r && !S.busy.drivers) setTimeout(loadDrivers);
+    root.append(h('div', { class: 'card' },
+      h('div', { class: 'row' },
+        btn('Check again', loadDrivers, 'primary', 'drivers'),
+        btn('Windows Update drivers', () => { S.tab.upd = 'drv'; go('updates'); }),
+        btn('Device Manager', () => openThing('devmgmt'), 'link'),
+        h('span', { class: 'spacer' }),
+        r ? h('span', { class: 'muted small', text: 'Checked ' + fmtAgo(r.Checked) }) : null),
+      h('p', { class: 'muted small', text: 'Official sources only: Windows, NVIDIA\'s own driver lookup, and the makers\' websites. CleanIT never installs drivers from third-party driver databases - that is how "driver updaters" break PCs.' }),
+      progLine('drivers')));
+    if (!r) { root.append(h('div', { class: 'empty', text: 'Checking graphics drivers, devices, BIOS and the driver store...' })); return; }
+
+    // Graphics
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Graphics'),
+      !r.Gpu.length ? h('div', { class: 'muted', text: 'No graphics card found.' }) :
+      r.Gpu.map(g => h('div', { class: 'opt' },
+        h('span', { class: 'pill ' + g.Level, text: g.Level === 'OK' ? 'Up to date' : g.Level === 'WARN' ? 'Update' : g.Level === 'BAD' ? 'Missing' : 'Check' }),
+        h('div', { class: 't' }, h('b', { text: g.Name }),
+          h('div', { text: g.Text }),
+          h('div', { text: 'Installed ' + (g.Installed || '?') + (g.Date ? ' (' + g.Date + ')' : '') + (g.Latest ? '  -  latest ' + g.Latest : '') })),
+        g.Download && g.Level === 'WARN' ? btn('Download from NVIDIA', () => openThing('url', { url: g.Download }), 'primary') : null,
+        g.Page ? btn(g.Vendor + ' drivers page', () => openThing('url', { url: g.Page })) : null))));
+
+    // Problem devices
+    const probs = r.Problems || [];
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Devices', h('small', { text: probs.length ? probs.length + ' with problems' : 'all working' })),
+      !probs.length ? h('div', { class: 'c-OK', text: 'Every device has a working driver.' }) :
+      probs.map(p => h('div', { class: 'opt' }, h('span', { class: 'pill ' + p.Level, text: p.Level === 'INFO' ? 'Off' : 'Problem' }),
+        h('div', { class: 't' }, h('b', { text: p.Name }), h('div', { text: p.Problem + (p.HardwareId ? '  -  ' + p.HardwareId : '') })),
+        p.HardwareId ? btn('Search driver', () => openThing('url', { url: p.Link }), 'link') : null))));
+
+    // BIOS
+    if (r.Bios) root.append(h('div', { class: 'card' }, h('h3', {}, 'BIOS / firmware'),
+      h('div', { class: 'opt' }, h('span', { class: 'pill ' + r.Bios.Level, text: r.Bios.Level === 'OK' ? 'Recent' : 'Check' }),
+        h('div', { class: 't' }, h('b', { text: r.Bios.Target + '  -  BIOS ' + r.Bios.Version }), h('div', { text: r.Bios.Text })),
+        btn('Find BIOS updates', () => openThing('url', { url: r.Bios.Link }), 'link')),
+      h('p', { class: 'muted small', text: 'CleanIT never flashes a BIOS. Only update from your motherboard or PC maker\'s own site and follow their steps exactly - a failed BIOS update can stop a PC from starting.' })));
+
+    // Old third-party drivers
+    const old = r.Outdated || [];
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Older drivers worth checking', h('small', { text: old.length + ' dated over 3 years ago' })),
+      h('p', { class: 'muted small', text: 'An old date does not always mean an update exists (some makers keep old dates), but these are worth a look on the maker\'s site. Windows\' own built-in drivers are not listed.' }),
+      old.length ? table({ id: 'olddrv', rows: old, rowKey: d => d.Device + d.Version, height: '320px',
+        columns: [
+          { key: 'Device', label: 'Device', render: d => h('b', { text: d.Device }) },
+          { key: 'Provider', label: 'Maker' },
+          { key: 'Version', label: 'Version', cls: 'muted' },
+          { key: 'Date', label: 'Driver date', render: d => d.Date + ' (' + d.Years + ' y)' },
+          { key: 'x', label: '', nosort: true, render: d => btn('Check for update', () => openThing('url', { url: d.Link }), 'link') }
+        ] }) : h('div', { class: 'c-OK', text: 'No old third-party drivers.' })));
+
+    // Driver store cleanup
+    const pk = r.Packages || [];
+    const rem = pk.filter(p => p.Removable);
+    const sel = S.sel.drvpk = S.sel.drvpk || new Set();
+    const sum = rem.filter(p => sel.has(p.Published)).reduce((a, p) => a + p.Size, 0);
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Old driver packages', h('small', { text: pk.length ? rem.length + ' removable, ' + fmtSize(rem.reduce((a, p) => a + p.Size, 0)) : '' })),
+      h('p', { class: 'muted small', text: 'Windows keeps a copy of every driver version ever installed. CleanIT only offers older versions that no device uses and that have a newer version installed; Windows itself refuses to remove anything still in use. You lose "roll back driver" for those old versions.' }),
+      !pk.length ? h('div', { class: 'muted', text: 'Needs administrator rights to read the driver store.' }) :
+      !rem.length ? h('div', { class: 'c-OK', text: 'No old driver packages - nothing to clean.' }) : [
+        h('div', { class: 'row', style: 'margin-bottom:10px' },
+          btn('Tick all', () => { rem.forEach(p => sel.add(p.Published)); render(); }),
+          h('span', { class: 'spacer' }), sel.size ? h('b', { text: sel.size + ' ticked (' + fmtSize(sum) + ')' }) : null,
+          btn('Remove ticked', removeDriverPackages, 'danger', 'drvpk', !sel.size)),
+        table({ id: 'drvpk', rows: rem, selKey: 'drvpk', rowKey: p => p.Published, height: '360px',
+          columns: [
+            { key: 'Name', label: 'Driver', render: p => h('b', { text: p.Name }) },
+            { key: 'Provider', label: 'Maker' },
+            { key: 'Class', label: 'Type', cls: 'muted' },
+            { key: 'Version', label: 'Old version' },
+            { key: 'NewestVersion', label: 'Kept (newest)', cls: 'muted' },
+            { key: 'Size', label: 'Size', cls: 'num', descFirst: true, render: p => fmtSize(p.Size) }
+          ] })]));
+  }
+};
+function loadDrivers() { return task('drivers', async () => { S.cache.drivers = await run('drivers', {}, prog('drivers')); S.sel.drvpk = new Set(); }); }
+async function removeDriverPackages() {
+  const names = [...S.sel.drvpk];
+  const list = S.cache.drivers.Packages.filter(p => names.includes(p.Published));
+  if (!await confirmBox('Remove ' + names.length + ' old driver package(s)?', [bullets(list.map(p => p.Name + ' ' + p.Version + ' (' + p.Provider + ', ' + fmtSize(p.Size) + ')'), 15),
+    h('p', { class: 'muted', text: 'Only unused older versions. The current drivers stay. Windows refuses anything still in use.' })], 'Remove', true)) return;
+  const rp = await restorePointChoice(); if (rp === null) return;
+  await task('drvpk', async () => { const r = await run('driverPackagesRemove', { names, restorePoint: rp }, prog('drvpk')); toast(r.removed.length + ' old driver package(s) removed.'); });
+  loadDrivers();
 }
 
 // ----- Updates

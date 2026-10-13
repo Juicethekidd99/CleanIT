@@ -89,11 +89,13 @@ function Format-Ago {
 # (WMI, Defender, TPM, BitLocker...) can never freeze a scan. Returns $Default on timeout/error.
 $script:TimedOut = New-Object System.Collections.Generic.List[string]
 function Invoke-WithTimeout {
-    param([string]$Name, [scriptblock]$Script, [int]$Seconds = 15, $Default = $null)
+    param([string]$Name, [scriptblock]$Script, [int]$Seconds = 15, $Default = $null, [object[]]$ArgumentList = @())
     $rs = [runspacefactory]::CreateRunspace()
     $rs.Open()
+    $rs.SessionStateProxy.SetVariable('ErrorActionPreference', 'SilentlyContinue')
     $ps = [powershell]::Create(); $ps.Runspace = $rs
-    [void]$ps.AddScript('$ErrorActionPreference = ''SilentlyContinue''; ' + $Script.ToString())
+    [void]$ps.AddScript($Script.ToString())
+    foreach ($a in $ArgumentList) { [void]$ps.AddArgument($a) }
     $h = $ps.BeginInvoke()
     if ($h.AsyncWaitHandle.WaitOne($Seconds * 1000)) {
         $r = $Default
@@ -2296,6 +2298,236 @@ function Invoke-DriveOptimize {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Drivers - official sources only (Windows, NVIDIA's own lookup, vendor pages).
+# Deliberately NOT a third-party driver database: those are how "driver updaters" install the wrong driver.
+# ---------------------------------------------------------------------------
+$script:DeviceErrors = @{
+    1 = 'is not configured correctly'; 3 = 'has a damaged driver or the PC is low on memory'; 10 = 'cannot start'
+    12 = 'cannot find enough free resources'; 14 = 'needs a restart to work'; 18 = 'needs its drivers reinstalled'
+    19 = 'has damaged registry settings'; 21 = 'is being removed'; 22 = 'is disabled'; 24 = 'is not present or not working'
+    28 = 'has no driver installed'; 31 = 'driver could not be loaded'; 32 = 'driver service is disabled'
+    37 = 'driver failed to start'; 39 = 'driver is damaged or missing'; 40 = 'has damaged driver settings'
+    41 = 'was not found after its driver loaded'; 43 = 'was stopped by Windows because it reported problems'
+    48 = 'driver is blocked because of known problems'; 52 = 'driver signature cannot be verified'
+}
+
+# Official "check / download" pages per driver maker.
+function Get-DriverVendorLink {
+    param([string]$Provider, [string]$Device)
+    if ($Provider -match 'NVIDIA') { return 'https://www.nvidia.com/en-us/drivers/' }
+    if ($Provider -match 'Intel') { return 'https://www.intel.com/content/www/us/en/support/detect.html' }
+    if ($Provider -match 'AMD|Advanced Micro') { return 'https://www.amd.com/en/support/download/drivers.html' }
+    'https://www.bing.com/search?q=' + [uri]::EscapeDataString("$Provider $Device driver download official site")
+}
+
+function Get-ProblemDevices {
+    $raw = @(Invoke-WithTimeout 'Device check' {
+        Get-CimInstance Win32_PnPEntity | Where-Object { $_.ConfigManagerErrorCode -and $_.ConfigManagerErrorCode -ne 45 } | ForEach-Object {
+            [pscustomobject]@{ Name = [string]$_.Name; Class = [string]$_.PNPClass; Code = [int]$_.ConfigManagerErrorCode
+                               HardwareId = [string](@($_.HardwareID) | Select-Object -First 1) }
+        }
+    } 30 @())
+    foreach ($d in $raw) {
+        if (-not $d) { continue }
+        $msg = $script:DeviceErrors[$d.Code]; if (-not $msg) { $msg = "reports error code $($d.Code)" }
+        $name = $d.Name; if (-not $name) { $name = 'Unknown device' }
+        $lvl = 'WARN'; if ($d.Code -eq 22) { $lvl = 'INFO' }
+        $link = 'https://www.bing.com/search?q=' + [uri]::EscapeDataString("$($d.HardwareId) driver")
+        [pscustomobject]@{ Name = $name; Class = $d.Class; Code = $d.Code; Problem = "$name $msg (code $($d.Code))"; HardwareId = $d.HardwareId; Level = $lvl; Link = $link }
+    }
+}
+
+function Get-DriverInventory {
+    @(Invoke-WithTimeout 'Driver list' {
+        Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceName -and $_.DriverProviderName } | ForEach-Object {
+            $d = $null; if ($_.DriverDate) { $d = ([datetime]$_.DriverDate).ToString('yyyy-MM-dd') }
+            [pscustomobject]@{ Class = [string]$_.DeviceClass; Device = [string]$_.DeviceName; Provider = [string]$_.DriverProviderName
+                               Version = [string]$_.DriverVersion; Date = $d; Inf = ([string]$_.InfName).ToLowerInvariant() }
+        }
+    } 60 @())
+}
+
+# Third-party drivers for real hardware dated over 3 years ago. Windows' own built-in drivers are never flagged.
+# Note: some makers (AMD chipset, Razer...) keep old dates even in new releases, so the UI says "worth checking", not "outdated".
+function Get-OutdatedDrivers {
+    param($Inventory)
+    if (-not $Inventory) { $Inventory = Get-DriverInventory }
+    $classes = @('DISPLAY', 'NET', 'MEDIA', 'BLUETOOTH', 'SYSTEM', 'HDC', 'SCSIADAPTER', 'USB', 'IMAGE', 'CAMERA', 'BIOMETRIC', 'MOUSE', 'KEYBOARD', 'HIDCLASS')
+    $cutoff = (Get-Date).AddYears(-3)
+    $seen = @{}
+    foreach ($d in $Inventory) {
+        if (-not $d.Date -or $d.Provider -match '^Microsoft') { continue }
+        if ($classes -notcontains $d.Class.ToUpperInvariant()) { continue }
+        if ($d.Device -match 'Virtual|Streaming|VirtualBox|VMware|Hyper-V|Remote|Parsec') { continue }
+        $date = [datetime]::ParseExact($d.Date, 'yyyy-MM-dd', $null)
+        if ($date -gt $cutoff) { continue }
+        $key = "$($d.Device)|$($d.Version)"
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $years = [math]::Floor(((Get-Date) - $date).TotalDays / 365)
+        [pscustomobject]@{ Device = $d.Device; Class = $d.Class; Provider = $d.Provider; Version = $d.Version; Date = $d.Date
+                           Years = $years; Link = (Get-DriverVendorLink $d.Provider $d.Device) }
+    }
+}
+
+function ConvertTo-NvidiaVersion {
+    # Windows shows NVIDIA drivers as e.g. 32.0.16.1714 - NVIDIA calls that 617.14 (last five digits).
+    param([string]$WindowsVersion)
+    $digits = $WindowsVersion -replace '[^0-9]', ''
+    if ($digits.Length -lt 5) { return $WindowsVersion }
+    $t = $digits.Substring($digits.Length - 5)
+    '{0}.{1}' -f [int]$t.Substring(0, 3), $t.Substring(3)
+}
+
+function Get-NvidiaLatestDriver {
+    param([string]$GpuName)
+    Invoke-WithTimeout 'NVIDIA driver lookup' {
+        param($Name)
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $x = [xml](Invoke-WebRequest -UseBasicParsing 'https://www.nvidia.com/Download/API/lookupValueSearch.aspx?TypeID=3' -TimeoutSec 15).Content
+        $want = @($Name, ($Name -replace '^NVIDIA\s+', ''))
+        $m = $x.LookupValueSearch.LookupValues.LookupValue | Where-Object { $want -contains $_.Name } | Select-Object -First 1
+        if (-not $m) { return [pscustomobject]@{ Found = $false } }
+        $u = 'https://gfwsl.geforce.com/services_toolkit/services/com/nvidia/services/AjaxDriverService.php?func=DriverManualLookup' +
+             "&psid=$($m.ParentID)&pfid=$($m.Value)&osID=57&languageCode=1033&beta=0&isWHQL=1&dltype=-1&dch=1&upCRD=0&qnf=0&sort1=0&numberOfResults=1"
+        $j = (Invoke-WebRequest -UseBasicParsing $u -TimeoutSec 15).Content | ConvertFrom-Json
+        $i = @($j.IDS)[0].downloadInfo
+        if (-not $i) { return [pscustomobject]@{ Found = $false } }
+        [pscustomobject]@{ Found = $true; Version = [string]$i.Version; Released = [uri]::UnescapeDataString([string]$i.ReleaseDateTime)
+                           Title = [uri]::UnescapeDataString([string]$i.Name); Url = [string]$i.DownloadURL }
+    } 30 $null @($GpuName)
+}
+
+function Get-GpuStatus {
+    foreach ($g in @(Invoke-WithTimeout 'Graphics card list' { Get-CimInstance Win32_VideoController | ForEach-Object {
+            $d = $null; if ($_.DriverDate) { $d = ([datetime]$_.DriverDate).ToString('yyyy-MM-dd') }
+            [pscustomobject]@{ Name = [string]$_.Name; Version = [string]$_.DriverVersion; Date = $d } } } 20 @())) {
+        if (-not $g -or $g.Name -match 'Virtual|Remote|Parsec|Hyper-V|VMware|VirtualBox|Mirage|Indirect|Meta|Citrix') { continue }
+        $o = [ordered]@{ Name = $g.Name; Vendor = 'Other'; Installed = $g.Version; Date = $g.Date; Latest = $null; Released = $null
+                         Download = $null; Page = $null; Level = 'OK'; Text = '' }
+        $ageYears = 0
+        if ($g.Date) { $ageYears = ((Get-Date) - [datetime]::ParseExact($g.Date, 'yyyy-MM-dd', $null)).TotalDays / 365 }
+        if ($g.Name -match 'Microsoft Basic Display|Basic Render') {
+            $o.Level = 'BAD'; $o.Text = 'No graphics driver is installed - Windows is using its basic fallback driver (slow, no games/3D acceleration). Install the driver from your graphics card maker.'
+        }
+        elseif ($g.Name -match 'NVIDIA') {
+            $o.Vendor = 'NVIDIA'; $o.Installed = ConvertTo-NvidiaVersion $g.Version; $o.Page = 'https://www.nvidia.com/en-us/drivers/'
+            $l = Get-NvidiaLatestDriver $g.Name
+            if ($l -and $l.Found) {
+                $o.Latest = $l.Version; $o.Released = $l.Released; $o.Download = $l.Url
+                $newer = $false
+                try { $newer = [version]$l.Version -gt [version]$o.Installed } catch {}
+                if ($newer) { $o.Level = 'WARN'; $o.Text = "NVIDIA $($l.Title) $($l.Version) is out (released $($l.Released)). You have $($o.Installed)." }
+                else { $o.Text = "Up to date - $($o.Installed) is NVIDIA's latest driver for this card." }
+            }
+            else { $o.Level = 'INFO'; $o.Text = "Installed $($o.Installed). Could not check NVIDIA's servers right now (offline?) - try again later." }
+        }
+        elseif ($g.Name -match 'AMD|Radeon') {
+            $o.Vendor = 'AMD'; $o.Page = 'https://www.amd.com/en/support/download/drivers.html'; $o.Level = 'INFO'
+            $o.Text = "Installed $($g.Version) from $($g.Date). AMD has no public version lookup - check in AMD Software: Adrenalin Edition, or with AMD's auto-detect tool."
+            if ($ageYears -gt 1) { $o.Level = 'WARN'; $o.Text = "Driver is over a year old ($($g.Date)). Get the current one from AMD Software: Adrenalin Edition or AMD's site." }
+        }
+        elseif ($g.Name -match 'Intel') {
+            $o.Vendor = 'Intel'; $o.Page = 'https://www.intel.com/content/www/us/en/support/detect.html'; $o.Level = 'INFO'
+            $o.Text = "Installed $($g.Version) from $($g.Date). Intel Driver & Support Assistant checks for newer Intel graphics drivers."
+            if ($ageYears -gt 1) { $o.Level = 'WARN'; $o.Text = "Driver is over a year old ($($g.Date)). Laptop makers sometimes ship their own - check Intel Driver & Support Assistant or your PC maker's site." }
+        }
+        else { $o.Text = "Installed $($g.Version)." }
+        [pscustomobject]$o
+    }
+}
+
+function Get-BiosStatus {
+    $b = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue
+    $bb = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue
+    $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+    if (-not $b) { return $null }
+    $board = (('{0} {1}' -f $bb.Manufacturer, $bb.Product) -replace '(?i)\s*(Technology Co\.,? Ltd\.?|Co\.,? Ltd\.?|Corporation|Corp\.?|,? Inc\.?|International)', '').Trim()
+    $model = ('{0} {1}' -f $cs.Manufacturer, $cs.Model).Trim()
+    # Self-built PCs report placeholder models - the motherboard is what has BIOS downloads.
+    $target = $model
+    if (-not $cs.Model -or $cs.Model -match 'System Product Name|To be filled|Default string|^\s*$' -or $board -like "*$($cs.Model)*") { $target = $board }
+    $date = $null; $years = 0
+    if ($b.ReleaseDate) { $date = ([datetime]$b.ReleaseDate).ToString('yyyy-MM-dd'); $years = ((Get-Date) - [datetime]$b.ReleaseDate).TotalDays / 365 }
+    $lvl = 'OK'; $text = "BIOS $($b.SMBIOSBIOSVersion) from $date."
+    if ($years -ge 3) { $lvl = 'WARN'; $text = "BIOS $($b.SMBIOSBIOSVersion) is from $date ($([math]::Floor($years)) years old). BIOS updates carry CPU security and stability fixes - check the support page for $target." }
+    elseif ($years -ge 1.5) { $lvl = 'INFO'; $text = "BIOS $($b.SMBIOSBIOSVersion) is from $date. Worth checking the support page for $target once in a while." }
+    [pscustomobject]@{ Version = [string]$b.SMBIOSBIOSVersion; Date = $date; Years = [math]::Round($years, 1); Board = $board; Target = $target
+                       Level = $lvl; Text = $text; Link = ('https://www.bing.com/search?q=' + [uri]::EscapeDataString("$target BIOS download support")) }
+}
+
+# Third-party driver packages kept in the Windows driver store. Older copies that no device uses can go
+# (Windows keeps every version ever installed - old GPU drivers are often 1 GB+ each).
+function Get-DriverPackages {
+    param($Inventory)
+    if (-not $Inventory) { $Inventory = Get-DriverInventory }
+    $inUse = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($d in $Inventory) { if ($d.Inf) { [void]$inUse.Add($d.Inf) } }
+    $pkgs = @(Invoke-WithTimeout 'Driver store' {
+        Get-WindowsDriver -Online | ForEach-Object {
+            $d = $null; if ($_.Date) { $d = ([datetime]$_.Date).ToString('yyyy-MM-dd') }
+            [pscustomobject]@{ Published = [string]$_.Driver; Path = [string]$_.OriginalFileName; Provider = [string]$_.ProviderName
+                               Class = [string]$_.ClassName; Version = [string]$_.Version; Date = $d }
+        }
+    } 120 @())
+    Initialize-Native
+    foreach ($grp in ($pkgs | Where-Object { $_.Path } | Group-Object { ([IO.Path]::GetFileName($_.Path) + '|' + $_.Provider).ToLowerInvariant() })) {
+        $sorted = @($grp.Group | Sort-Object { try { [version]$_.Version } catch { [version]'0.0' } }, Date -Descending)
+        $newest = $sorted[0]
+        foreach ($p in $sorted) {
+            $used = $inUse.Contains($p.Published)
+            $size = 0; try { $size = [CleanIT.Disk]::FolderSize([IO.Path]::GetDirectoryName($p.Path)) } catch {}
+            [pscustomobject]@{
+                Published = $p.Published; Name = [IO.Path]::GetFileName($p.Path); Provider = $p.Provider; Class = $p.Class
+                Version = $p.Version; Date = $p.Date; InUse = $used; Newest = ($p -eq $newest); Size = [double]$size
+                Removable = (($p -ne $newest) -and -not $used); NewestVersion = $newest.Version
+            }
+        }
+    }
+}
+
+function Remove-DriverPackage {
+    param([string]$Published)
+    if ($Published -notmatch '^oem\d+\.inf$') { throw "Not a third-party driver package: $Published" }
+    # No /force: Windows refuses if any device still uses it.
+    $out = & pnputil.exe /delete-driver $Published 2>&1
+    if ($LASTEXITCODE -ne 0) { throw (($out | Out-String).Trim()) }
+    Write-Log "Removed old driver package $Published" 'OK'
+}
+
+function Get-DriverReport {
+    param([switch]$Quick)
+    Set-BgProgress 10 'Checking graphics drivers'
+    $gpu = @(Get-GpuStatus)
+    Set-BgProgress 30 'Checking devices'
+    $problems = @(Get-ProblemDevices)
+    $bios = Get-BiosStatus
+    $outdated = @(); $packages = @()
+    if (-not $Quick) {
+        Set-BgProgress 45 'Reading installed drivers'
+        $inv = Get-DriverInventory
+        $outdated = @(Get-OutdatedDrivers $inv)
+        Set-BgProgress 65 'Reading the driver store'
+        $packages = @(Get-DriverPackages $inv)
+    }
+    $r = [pscustomobject]@{ Gpu = $gpu; Problems = $problems; Bios = $bios; Outdated = $outdated; Packages = $packages; Checked = (Get-Date).ToString('s'); Quick = [bool]$Quick }
+    # summary for the dashboard / fleet
+    $old = @(Read-JsonFile (Get-StatePath 'drivers'))
+    $summary = [ordered]@{
+        Checked = $r.Checked
+        GpuUpdates = @($gpu | Where-Object { $_.Level -eq 'WARN' -and $_.Latest } | ForEach-Object { "$($_.Name): $($_.Latest)" })
+        NoGpuDriver = [bool](@($gpu | Where-Object { $_.Level -eq 'BAD' }).Count)
+        Problems = @($problems | Where-Object { $_.Level -eq 'WARN' }).Count
+        BiosLevel = $(if ($bios) { $bios.Level } else { 'OK' }); BiosText = $(if ($bios) { $bios.Text } else { '' })
+        Outdated = $(if ($Quick -and $old) { [int]$old[0].Outdated } else { $outdated.Count })
+        OldPackageBytes = $(if ($Quick -and $old) { [double]$old[0].OldPackageBytes } else { [double](($packages | Where-Object { $_.Removable } | Measure-Object Size -Sum).Sum) })
+    }
+    Write-JsonFile (Get-StatePath 'drivers') ([pscustomobject]$summary)
+    Write-Log ("Driver check: {0} graphics card(s), {1} device problem(s), {2} outdated driver(s)." -f $gpu.Count, $summary.Problems, $outdated.Count) 'OK'
+    $r
+}
+
 function Get-StabilitySummary {
     $empty = [pscustomobject]@{ Unexpected = 0; BlueScreens = 0; AppCrashes = 0; TopCrashers = @() }
     Invoke-WithTimeout 'Crash history (event log)' {
@@ -2452,6 +2684,15 @@ function Get-DashboardData {
     if ([int]$lc.AppUpdates -gt 0) { & $add ([math]::Min(10, 2 * [int]$lc.AppUpdates)) 'WARN' "$($lc.AppUpdates) app update(s) available" 'Updates' }
     if (-not $lc.AppDate -or ([datetime]$lc.AppDate) -lt (Get-Date).AddDays(-14)) { & $add 3 'INFO' 'App updates not checked in the last 2 weeks' 'Updates' }
 
+    $drv = Read-JsonFile (Get-StatePath 'drivers')
+    if ($drv) {
+        if ($drv.NoGpuDriver) { & $add 15 'BAD' 'No graphics driver installed (Windows basic display driver in use)' 'Drivers' }
+        foreach ($u in @($drv.GpuUpdates)) { if ($u) { & $add 5 'WARN' "New graphics driver available - $u" 'Drivers' } }
+        if ([int]$drv.Problems -gt 0) { & $add 5 'WARN' "$($drv.Problems) device(s) not working properly (Device Manager errors)" 'Drivers' }
+        if ($drv.BiosLevel -eq 'WARN') { & $add 2 'INFO' 'BIOS is over 3 years old - check for an update' 'Drivers' }
+        if ([double]$drv.OldPackageBytes -gt 200MB) { & $add 0 'INFO' ("{0} of old driver packages can be removed" -f (Format-Size $drv.OldPackageBytes)) 'Drivers' }
+    }
+    else { & $add 2 'INFO' 'Drivers not checked yet' 'Drivers' }
     $stab = Get-StabilitySummary
     if ($stab.BlueScreens -gt 0) { & $add 15 'BAD' "$($stab.BlueScreens) blue screen(s) in the last 30 days - see the Health tab" 'Health' }
     if ($stab.Unexpected -ge 3) { & $add 5 'WARN' "$($stab.Unexpected) unexpected shutdowns in the last 30 days (power loss, freezes or hard resets)" 'Health' }

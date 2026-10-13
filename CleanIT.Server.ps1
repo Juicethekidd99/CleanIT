@@ -222,6 +222,8 @@ $script:Actions = @{
         $scan = @(Invoke-JunkScan $keys)
         Set-BgProgress 70 'Checking app updates'
         if (Test-Winget) { [void]@(Get-WingetUpgrades) }
+        Set-BgProgress 78 'Checking drivers'
+        [void](Get-DriverReport -Quick)
         Set-BgProgress 85 'Checking health and security'
         $dash = Get-DashboardData
         $junk = 0; foreach ($x in $scan) { if ($x.Size -gt 0) { $junk += $x.Size } }
@@ -474,6 +476,33 @@ $script:Actions = @{
     batteryReport = @{ Name = 'Battery report'
         Work = { param($P) $o = Join-Path $script:DataDir 'battery-report.html'; & powercfg.exe /batteryreport /output $o 2>&1 | Out-Null; $o }
         Finalize = { param($Out) $f = $Out | Select-Object -Last 1; if ($f -and (Test-Path -LiteralPath $f)) { Open-ForUser $f }; $f } }
+
+    drivers = @{ Name = 'Checking drivers'
+        Work = { param($P) Get-DriverReport }
+        Finalize = {
+            param($Out)
+            $r = $Out | Select-Object -Last 1
+            $script:Cache.DriverPkgs = @{}
+            foreach ($p in @($r.Packages | Where-Object { $_.Removable })) { $script:Cache.DriverPkgs[$p.Published] = $p }
+            $r
+        } }
+
+    driverPackagesRemove = @{ Name = 'Removing old driver packages'
+        Prep = {
+            param($A)
+            $names = @($A.names | Where-Object { $script:Cache.DriverPkgs -and $script:Cache.DriverPkgs.ContainsKey([string]$_) } | ForEach-Object { [string]$_ })
+            if (-not $names.Count) { throw 'Nothing selected - run the driver check again.' }
+            @{ Names = $names; Rp = (Use-RestorePoint $A) }
+        }
+        Work = {
+            param($P)
+            if ($P.Rp) { [void](New-CleanITRestorePoint 'Before removing old driver packages') }
+            $done = @()
+            foreach ($n in $P.Names) {
+                try { Remove-DriverPackage $n; $done += $n } catch { Write-Log "Driver package $n kept: $($_.Exception.Message)" 'WARN' }
+            }
+            [pscustomobject]@{ removed = $done }
+        } }
 
     restorePointNow = @{ Name = 'Creating restore point'; Work = { param($P) [void](New-CleanITRestorePoint 'Manual restore point') } }
     enableProtection = @{ Name = 'Turning on System Protection'
@@ -789,6 +818,7 @@ function Invoke-Api {
                     'data'     { Open-ForUser $script:DataDir }
                     'backups'  { Open-ForUser $script:BackupDir }
                     'restore'  { Start-Process "$env:SystemRoot\System32\rstrui.exe" }
+                    'devmgmt'  { Start-Process "$env:SystemRoot\System32\devmgmt.msc" }
                     'path' {
                         $p = [string]$body.path
                         if (-not (Test-Path -LiteralPath $p)) { throw "Not found: $p" }
@@ -796,7 +826,8 @@ function Invoke-Api {
                     }
                     'url' {
                         $u = [string]$body.url
-                        if ($u -notmatch '^(ms-settings:[a-z\-]+|windowsdefender:|ms-windows-store://(pdp/\?PFN=[\w.\-]+|search/\?query=[\w%.\-+]+))$') { throw 'Link not allowed.' }
+                        $web = '^https://(www\.nvidia\.com|us\.download\.nvidia\.com|www\.amd\.com|www\.intel\.com|www\.bing\.com)/[\w\-./?=&%+:]*$'
+                        if ($u -notmatch '^(ms-settings:[a-z\-]+|windowsdefender:|ms-windows-store://(pdp/\?PFN=[\w.\-]+|search/\?query=[\w%.\-+]+))$' -and $u -notmatch $web) { throw 'Link not allowed.' }
                         Open-ForUser $u
                     }
                     default { throw 'Unknown target.' }

@@ -48,6 +48,7 @@ param(
     [switch]$Updates,
     [switch]$WindowsUpdates,
     [switch]$Drivers,
+    [switch]$DriverCheck,
     [switch]$Report,
     [switch]$Security,
     [switch]$Optimize,
@@ -79,7 +80,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 $script:SelfPath     = $MyInvocation.MyCommand.Path
 $script:AppDir       = Split-Path -Parent $script:SelfPath
 $script:IsDotSourced = $MyInvocation.InvocationName -eq '.'
-$cliSwitches = @('Scan', 'Clean', 'Updates', 'WindowsUpdates', 'Drivers', 'Report', 'Security', 'Optimize', 'Repair', 'QuickScan',
+$cliSwitches = @('Scan', 'Clean', 'Updates', 'WindowsUpdates', 'Drivers', 'DriverCheck', 'Report', 'Security', 'Optimize', 'Repair', 'QuickScan',
                  'LargeFiles', 'Duplicates', 'Privacy', 'UndoPrivacy', 'UndoStartup', 'ListCategories', 'ListBloat',
                  'InstallSchedule', 'RemoveSchedule', 'Install', 'Uninstall', 'Fleet')
 $script:IsCli = @($cliSwitches | Where-Object { $PSBoundParameters[$_] }).Count -gt 0
@@ -196,6 +197,17 @@ if ($Report) {
     $r = Get-HealthReport
     Add-Content -Path $script:LogFile -Value $r
     Write-Host $r
+}
+if ($DriverCheck) {
+    $d = Get-DriverReport
+    $lines = @('GRAPHICS') + @($d.Gpu | ForEach-Object { "  [$($_.Level)] $($_.Name): $($_.Text)" }) +
+              @('', "DEVICES: $(@($d.Problems).Count) with problems") + @($d.Problems | ForEach-Object { "  [$($_.Level)] $($_.Problem)" }) +
+              @('', 'BIOS', "  [$($d.Bios.Level)] $($d.Bios.Text)", '', "OLDER DRIVERS WORTH CHECKING: $(@($d.Outdated).Count)") +
+              @($d.Outdated | ForEach-Object { "  $($_.Device) ($($_.Provider)) $($_.Date)" }) +
+              @('', ("OLD DRIVER PACKAGES: {0} removable ({1})" -f @($d.Packages | Where-Object Removable).Count, (Format-Size (($d.Packages | Where-Object Removable | Measure-Object Size -Sum).Sum))))
+    $txt = $lines -join "`r`n"
+    Add-Content -Path $script:LogFile -Value $txt
+    Write-Host $txt
 }
 if ($Security) {
     $t = Get-SecurityChecks | Format-Table Level, Name, Detail -AutoSize -Wrap | Out-String
