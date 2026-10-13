@@ -3,7 +3,7 @@
 # every system change is reversible and its previous state is recorded under DataDir\State.
 
 $script:AppName     = 'CleanIT'
-$script:Version     = '2.1.0'
+$script:Version     = '2.2.0'
 $script:CorePath    = $PSCommandPath
 $script:DataDir     = $env:CLEANIT_DATADIR
 if (-not $script:DataDir) { $script:DataDir = Join-Path $env:ProgramData 'CleanIT' }
