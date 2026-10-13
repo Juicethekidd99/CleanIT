@@ -3,7 +3,7 @@
 # every system change is reversible and its previous state is recorded under DataDir\State.
 
 $script:AppName     = 'CleanIT'
-$script:Version     = '2.4.0'
+$script:Version     = '2.5.0'
 $script:CorePath    = $PSCommandPath
 if ($env:CLEANIT_FAKE_VERSION) { $script:Version = $env:CLEANIT_FAKE_VERSION }   # updater tests only
 $script:DataDir     = $env:CLEANIT_DATADIR
@@ -3019,6 +3019,155 @@ function Get-DefaultDiskExcludes {
     @($env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData,
       "$env:SystemDrive\`$Recycle.Bin", "$env:SystemDrive\System Volume Information", "$env:SystemDrive\Recovery") +
     @(Get-UserProfiles | ForEach-Object { "$_\AppData" }) | Where-Object { $_ }
+}
+
+# ---------------------------------------------------------------------------
+# "Free up space" assistant - finds the big, safe wins in the user's own files and explains them.
+# Only ever suggests FILES (never folders) for deletion; moving games/VMs is explained, not done.
+# ---------------------------------------------------------------------------
+function Get-DownloadsFolder {
+    if ($env:CLEANIT_DOWNLOADS) { return $env:CLEANIT_DOWNLOADS }   # tests
+    $p = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction SilentlyContinue).'{374DE290-123F-4565-9164-39C4925E467B}'
+    if ($p) { $p = [Environment]::ExpandEnvironmentVariables($p) }
+    if (-not $p -or -not (Test-Path -LiteralPath $p)) { $p = Join-Path $env:USERPROFILE 'Downloads' }
+    $p
+}
+
+function Get-SteamGames {
+    foreach ($lib in (Get-SteamLibraries).Libraries) {
+        $apps = Join-Path $lib 'steamapps'
+        foreach ($m in @(Get-ChildItem -LiteralPath $apps -Filter 'appmanifest_*.acf' -ErrorAction SilentlyContinue)) {
+            $txt = [IO.File]::ReadAllText($m.FullName)
+            $name = [regex]::Match($txt, '"name"\s+"([^"]*)"').Groups[1].Value
+            $size = 0; [void][double]::TryParse([regex]::Match($txt, '"SizeOnDisk"\s+"(\d+)"').Groups[1].Value, [ref]$size)
+            if (-not $name -or $size -lt 1GB) { continue }
+            [pscustomobject]@{ Name = $name; Size = [double]$size; Library = $lib; Drive = $lib.Substring(0, 2).ToUpperInvariant() }
+        }
+    }
+}
+
+function Get-VirtualBoxVMs {
+    $cfg = Join-Path $env:USERPROFILE '.VirtualBox\VirtualBox.xml'
+    if (-not (Test-Path -LiteralPath $cfg)) { return }
+    Initialize-Native
+    foreach ($m in [regex]::Matches([IO.File]::ReadAllText($cfg), '<MachineEntry[^>]*src="([^"]+)"')) {
+        $vbox = $m.Groups[1].Value
+        if (-not [IO.Path]::IsPathRooted($vbox)) { $vbox = Join-Path (Join-Path $env:USERPROFILE 'VirtualBox VMs') $vbox }
+        $dir = Split-Path -Parent $vbox
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        [pscustomobject]@{ Name = [IO.Path]::GetFileNameWithoutExtension($vbox); Path = $dir; Size = [double][CleanIT.Disk]::FolderSize($dir)
+                           Drive = $dir.Substring(0, 2).ToUpperInvariant() }
+    }
+}
+
+function Get-SpaceReport {
+    Initialize-Native
+    $drives = @(Get-FixedDrives | Where-Object { $_.Size -ge 1GB } | ForEach-Object {   # skip tiny system partitions
+        [pscustomobject]@{ Drive = [string]$_.DeviceID; Label = [string]$_.VolumeName; Size = [double]$_.Size; Free = [double]$_.FreeSpace
+                           FreePct = [math]::Round(100.0 * $_.FreeSpace / $_.Size, 1) }
+    })
+    $best = $drives | Sort-Object Free -Descending | Select-Object -First 1
+    $dl = Get-DownloadsFolder
+    $safe = New-Object System.Collections.Generic.List[object]
+    $review = New-Object System.Collections.Generic.List[object]
+    Set-BgProgress 10 'Looking at Downloads'
+
+    if (Test-Path -LiteralPath $dl) {
+        $files = @(Get-ChildItem -LiteralPath $dl -File -Force -ErrorAction SilentlyContinue | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
+        $dirs = @{}
+        foreach ($d in @(Get-ChildItem -LiteralPath $dl -Directory -Force -ErrorAction SilentlyContinue)) { $dirs[$d.Name.ToLowerInvariant()] = $d }
+        $cutoff = (Get-Date).AddDays(-14)
+        foreach ($f in $files) {
+            $ext = $f.Extension.ToLowerInvariant()
+            $item = $null
+            if ($ext -match '^\.(zip|rar|7z|gz|tgz|xz|bz2|tar)$') {
+                # "game.rar" next to a "game" folder = already unpacked (multi-part "game.part2.rar" too)
+                $base = [IO.Path]::GetFileNameWithoutExtension($f.Name) -replace '(?i)\.tar$', '' -replace '(?i)\.part\d+$', ''
+                $twin = $dirs[$base.ToLowerInvariant()]
+                if ($twin) {
+                    $tsize = [CleanIT.Disk]::FolderSize($twin.FullName)
+                    if ($tsize -ge $f.Length * 0.5) {
+                        $safe.Add([pscustomobject]@{ Path = $f.FullName; Name = $f.Name; Size = [double]$f.Length; Kind = 'Archive'
+                            Date = $f.LastWriteTime.ToString('yyyy-MM-dd'); Why = "Already unpacked into the ""$($twin.Name)"" folder next to it - this is a leftover copy." })
+                        continue
+                    }
+                }
+                if ($f.Length -ge 500MB -and $f.LastWriteTime -lt $cutoff) {
+                    $item = [pscustomobject]@{ Path = $f.FullName; Name = $f.Name; Size = [double]$f.Length; Kind = 'Archive'
+                        Date = $f.LastWriteTime.ToString('yyyy-MM-dd'); Why = 'Big archive. If you already unpacked or installed what is inside, you no longer need it.' }
+                }
+            }
+            elseif ($ext -match '^\.(iso|img|vhd|vhdx|ova|wim|esd)$') {
+                $item = [pscustomobject]@{ Path = $f.FullName; Name = $f.Name; Size = [double]$f.Length; Kind = 'Disk image'
+                    Date = $f.LastWriteTime.ToString('yyyy-MM-dd'); Why = 'Disk image - only needed to install or boot something. Delete it if you are done with it (you can download it again).' }
+            }
+            elseif ($ext -match '^\.(exe|msi|msix|msixbundle|appx|appxbundle)$' -and $f.LastWriteTime -lt $cutoff) {
+                $item = [pscustomobject]@{ Path = $f.FullName; Name = $f.Name; Size = [double]$f.Length; Kind = 'Installer'
+                    Date = $f.LastWriteTime.ToString('yyyy-MM-dd'); Why = 'Setup file from over 2 weeks ago. The program is already installed (or you skipped it) - setup files can be downloaded again.' }
+            }
+            if ($item) { $review.Add($item) }
+        }
+    }
+
+    # Several versions of the same file (darkside-v6.iso ... darkside-v10.iso): point out the older ones.
+    foreach ($grp in ($review | Group-Object { $_.Kind + '|' + (($_.Name -replace '\d+', '#') -replace '[\s._-]+', '').ToLowerInvariant() } | Where-Object { $_.Count -gt 1 })) {
+        $sorted = @($grp.Group | Sort-Object Date, Name -Descending)
+        foreach ($old in $sorted | Select-Object -Skip 1) { $old.Why = "Older version - you also have $($sorted[0].Name). Keep the newest, delete the rest." }
+    }
+
+    Set-BgProgress 40 'Checking Recycle Bins'
+    $bins = @(foreach ($d in $drives) {
+        $p = "$($d.Drive)\`$Recycle.Bin"
+        $s = 0; if (Test-Path -LiteralPath $p) { try { $s = [CleanIT.Disk]::FolderSize($p) } catch {} }
+        if ($s -ge 10MB) { [pscustomobject]@{ Drive = $d.Drive; Size = [double]$s } }
+    })
+
+    Set-BgProgress 60 'Looking for games and virtual machines'
+    $games = @(Get-SteamGames | Sort-Object Size -Descending)
+    $vms = @(Get-VirtualBoxVMs | Sort-Object Size -Descending)
+    $dlSize = 0; if (Test-Path -LiteralPath $dl) { $dlSize = [CleanIT.Disk]::FolderSize($dl) }
+
+    [pscustomobject]@{
+        Drives = $drives; Best = $(if ($best) { $best.Drive } else { $null }); Downloads = $dl; DownloadsSize = [double]$dlSize
+        Safe = @($safe | Sort-Object Size -Descending); Review = @($review | Sort-Object Size -Descending); Bins = $bins; Games = $games; VMs = $vms
+        SystemDrive = $env:SystemDrive
+    }
+}
+
+function Remove-SpaceItems {
+    param([string[]]$Paths)
+    $freed = 0; $done = New-Object System.Collections.Generic.List[string]
+    $dl = (Get-DownloadsFolder).TrimEnd('\')
+    foreach ($p in $Paths) {
+        try {
+            $f = Get-Item -LiteralPath $p -Force -ErrorAction Stop
+            if ($f.PSIsContainer -or ($f.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'not a plain file' }
+            # Only files sitting directly in Downloads, and never through a junction/symlink anywhere on the path.
+            if (-not $f.DirectoryName.TrimEnd('\').Equals($dl, [StringComparison]::OrdinalIgnoreCase)) { throw 'not directly in the Downloads folder' }
+            $dir = $f.Directory
+            while ($dir) {
+                if ($dir.LinkType -in @('Junction', 'SymbolicLink')) { throw "path goes through a link ($($dir.FullName))" }
+                $dir = $dir.Parent
+            }
+            $len = $f.Length
+            Remove-Item -LiteralPath $p -Force -ErrorAction Stop
+            $freed += $len; $done.Add($p)
+            Write-Log "Deleted $p ($(Format-Size $len))" 'OK'
+        }
+        catch { Write-Log "Not deleted: $p - $($_.Exception.Message)" 'WARN' }
+    }
+    Write-Log "Freed $(Format-Size $freed)." 'OK'
+    [pscustomobject]@{ Removed = $done.ToArray(); Freed = [double]$freed }
+}
+
+function Clear-DriveRecycleBin {
+    param([string]$Drive)
+    $letter = $Drive.TrimEnd(':', '\')
+    if ($letter -notmatch '^[A-Za-z]$') { throw 'Invalid drive.' }
+    $before = [CleanIT.Disk]::FolderSize("${letter}:\`$Recycle.Bin")
+    Clear-RecycleBin -DriveLetter $letter -Force -ErrorAction Stop
+    Write-Log "Emptied the Recycle Bin on ${letter}: ($(Format-Size $before))." 'OK'
+    [double]$before
 }
 
 function Find-LargeFiles {

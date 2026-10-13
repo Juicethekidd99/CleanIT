@@ -201,3 +201,14 @@ pre.notes { white-space: pre-wrap; font: 13px/1.5 "Segoe UI", system-ui, sans-se
 .todo-list li .t { margin-bottom: 8px; }
 .todo-list li::marker { font-weight: 700; color: var(--accent); }
 .notice .pill { margin: 0 2px; }
+
+/* Free up space */
+.drive { margin: 12px 0 4px; }
+.drive .row { margin-bottom: 6px; }
+.bar.big { height: 12px; border-radius: 6px; }
+.bar i.warn { background: linear-gradient(90deg, #d97706, #f59e0b); }
+.bar i.bad { background: linear-gradient(90deg, #b91c1c, #ef4444); }
+.check-row { cursor: pointer; }
+.check-row input { flex: none; }
+.opt .size { font-weight: 600; white-space: nowrap; min-width: 80px; text-align: right; }
+.sticky-action { position: sticky; top: 0; z-index: 5; border-color: var(--accent-2); }

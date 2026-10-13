@@ -51,6 +51,11 @@ Roadmap: `ROADMAP.md`.
 - Never delete through reparse points; never touch event logs; **no registry cleaner**, no RAM/game "boosters".
 - Anything destructive: preview first, explicit confirmation in the UI, logged. Files go to the Recycle Bin;
   registry keys are `reg export`ed first.
+- Exception: the Free-up-space assistant deletes permanently (so space is really freed), but only plain FILES directly in
+  the Downloads folder that its own scan listed - never folders, never through junctions (`Remove-SpaceItems` enforces
+  this) - after a confirmation listing every file. Moving Steam games/VMs is explained step by step, never done by CleanIT.
+- Plain English everywhere: every finding says what to do and why (Recommended / Optional / Not needed, Important /
+  Recommended / Optional / Automatic). Old driver dates alone never mean "outdated".
 - Anything that changes system settings must be reversible and record the previous state under `State\`.
 - Never `New-Item -Force` on an existing registry key (it wipes it) - test with `Test-Path` first.
 - `[math]::Max/Min` with a long and an int literal picks Int32 and overflows - cast both to `[double]`.
