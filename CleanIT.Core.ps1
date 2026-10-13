@@ -1527,7 +1527,7 @@ function Get-AppxInventory {
         $label = $a.Name; $rec = $false
         if ($rule) { $label = $rule[1]; $rec = [bool]$rule[2] }
         $pubName = ''
-        if ($a.Publisher -match 'O=([^,]+)') { $pubName = $Matches[1] } elseif ($a.Publisher -match 'CN=([^,]+)') { $pubName = $Matches[1] }
+        if ($a.Publisher -match 'O="([^"]+)"') { $pubName = $Matches[1] } elseif ($a.Publisher -match 'O=([^,]+)') { $pubName = $Matches[1] } elseif ($a.Publisher -match 'CN=([^,]+)') { $pubName = $Matches[1] }
         if ($pubName -match '^[0-9A-Fa-f]{8}-') { $pubName = '' }   # Store-signed: publisher is just a GUID
         [pscustomobject]@{
             Label = $label; Name = $a.Name; Family = $a.Family; Version = $a.Version; Publisher = $pubName
@@ -2069,7 +2069,7 @@ function Get-SecurityChecks {
     }
 
     $fw = @(Invoke-WithTimeout 'Firewall status' { Get-NetFirewallProfile } 15 @())
-    $off = @($fw | Where-Object { -not $_.Enabled } | ForEach-Object { $_.Name })
+    $off = @($fw | Where-Object { @('0', 'False') -contains [string]$_.Enabled } | ForEach-Object { $_.Name })   # value may arrive as code or name
     if ($fw.Count -and $off.Count) { & $add 'Firewall' 'BAD' ('Off for: ' + ($off -join ', ')) 'EnableFirewall' }
     elseif ($fw.Count) { & $add 'Firewall' 'OK' 'On for all network profiles.' '' }
 
@@ -2197,6 +2197,24 @@ function Get-StabilitySummary {
     } 30 $empty
 }
 
+# Physical disks with health as plain text. Converted inside the worker runspace: the Storage module's
+# friendly names (Healthy, SSD...) do not survive the trip between runspaces - raw codes (0, 4) arrive instead.
+function Get-DiskHealthInfo {
+    @(Invoke-WithTimeout 'Disk health (SMART)' {
+        $hsMap = @{ '0' = 'Healthy'; '1' = 'Warning'; '2' = 'Unhealthy'; '5' = 'Unknown' }
+        $mtMap = @{ '0' = 'Unspecified'; '3' = 'HDD'; '4' = 'SSD'; '5' = 'SCM' }
+        Get-PhysicalDisk | ForEach-Object {
+            $hs = [string]$_.HealthStatus; if ($hsMap.ContainsKey($hs)) { $hs = $hsMap[$hs] }
+            $mt = [string]$_.MediaType; if ($mtMap.ContainsKey($mt)) { $mt = $mtMap[$mt] }
+            $r = $_ | Get-StorageReliabilityCounter
+            [pscustomobject]@{
+                FriendlyName = [string]$_.FriendlyName; MediaType = $mt; HealthStatus = $hs; Size = [double]$_.Size
+                Rel = [pscustomobject]@{ Temperature = $r.Temperature; Wear = $r.Wear; PowerOnHours = $r.PowerOnHours; ReadErrorsUncorrected = $r.ReadErrorsUncorrected }
+            }
+        }
+    } 30 @())
+}
+
 function Get-HealthReport {
     $L = New-Object System.Collections.Generic.List[string]
     $os = Get-CimInstance Win32_OperatingSystem
@@ -2229,7 +2247,7 @@ function Get-HealthReport {
         $L.Add(('  {0}  {1} free of {2} ({3:N0}% free){4}' -f $d.DeviceID, (Format-Size $d.FreeSpace), (Format-Size $d.Size), $pct, $flag))
     }
 
-    $pd = @(Invoke-WithTimeout 'Disk health (SMART)' { Get-PhysicalDisk | ForEach-Object { $_ | Add-Member -NotePropertyName Rel -NotePropertyValue ($_ | Get-StorageReliabilityCounter) -PassThru } } 30 @())
+    $pd = @(Get-DiskHealthInfo)
     if ($pd.Count) {
         $L.Add(''); $L.Add('PHYSICAL DISKS (SMART)')
         foreach ($p in $pd) {
@@ -2244,7 +2262,7 @@ function Get-HealthReport {
                 if ($bits.Count) { $L.Add('      ' + ($bits -join ', ')) }
                 if ($rc.Wear -ge 80) { $L.Add('      ! SSD is near the end of its rated life - back up and plan a replacement.') }
             }
-            if ($p.HealthStatus -ne 'Healthy') { $L.Add('      ! Disk reports a problem - BACK UP NOW.') }
+            if ($p.HealthStatus -in @('Warning', 'Unhealthy')) { $L.Add('      ! Disk reports a problem - BACK UP NOW.') }
         }
     }
 
@@ -2313,8 +2331,8 @@ function Get-DashboardData {
         elseif ($c.Level -eq 'WARN' -and $c.Name -notin @('Windows updates', 'Outdated apps')) { & $add 5 'WARN' "$($c.Name): $($c.Detail)" 'Security' }
     }
 
-    foreach ($p in @(Invoke-WithTimeout 'Disk health (SMART)' { Get-PhysicalDisk } 20 @())) {
-        if ($p.HealthStatus -and $p.HealthStatus -ne 'Healthy') { & $add 30 'BAD' "Disk $($p.FriendlyName) reports $($p.HealthStatus) - back up now" 'Health' }
+    foreach ($p in @(Get-DiskHealthInfo)) {
+        if ($p.HealthStatus -in @('Warning', 'Unhealthy')) { & $add 30 'BAD' "Disk $($p.FriendlyName) reports $($p.HealthStatus) - back up now" 'Health' }
     }
 
     $lc = Get-LastCheck
