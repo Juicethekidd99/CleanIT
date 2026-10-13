@@ -1,0 +1,7 @@
+# Runtime output (CleanIT writes these to C:\ProgramData\CleanIT, but just in case)
+*.log
+*.ico
+battery-report.html
+State/
+Backups/
+Logs/

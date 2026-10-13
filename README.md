@@ -1,0 +1,98 @@
+# CleanIT
+
+A transparent, no-snake-oil replacement for Avast Cleanup Premium / CCleaner for Windows 10/11.
+Two PowerShell files, no install required, no ads, no telemetry, everything logged and reversible.
+(Formerly "PC Cleanup" v1.)
+
+> **Status: beta (v2.0.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
+> uninstall leftovers, services, privacy changes) and the weekly task are new - leave "create a restore point"
+> switched on (default) and review every list before you click. Use at your own risk; see LICENSE.
+
+## Requirements
+Windows 10 or 11, Windows PowerShell 5.1 (built in), administrator rights. winget (App Installer) for app updates.
+
+## Quick start
+1. Keep `CleanIT.ps1`, `CleanIT.Core.ps1` and `Run-CleanIT.bat` in the same folder.
+2. Double-click `Run-CleanIT.bat` and approve the UAC prompt.
+3. On the **Dashboard** click **Smart Scan**, then **Clean ...** - or go tab by tab.
+4. Optional: **Settings > Install** adds Start menu + desktop shortcuts (copies to `C:\ProgramData\CleanIT`).
+
+If Windows blocks the downloaded files: right-click each > Properties > tick **Unblock**, or run
+`Get-ChildItem .\* | Unblock-File`.
+
+## Tabs
+| Tab | What it does |
+|---|---|
+| Dashboard | Health score (0-100), Smart Scan (junk + security + updates + startup + privacy), freed-space history, fleet view of all your PCs |
+| Clean | 22 junk categories in 3 groups (Windows / Browsers / Apps), size per category, shows which open apps block a full clean |
+| Disk | Space analyzer with drill-down and size bars; large-file finder ("not used in N days"); duplicate finder (SHA-256, hard-link aware). Files only ever go to the Recycle Bin, one tick at a time |
+| Startup | Run keys, Startup folders, logon/boot scheduled tasks, auto-start services. Publisher + signature check (unsigned = orange). Undo all |
+| Apps | Bloatware remover (curated recommended list, hard blocklist for system parts, optional de-provisioning, reinstall via Store link). Uninstaller that finds leftover folders/registry keys afterwards |
+| Updates | App updates via winget (with "never update" list), Windows updates and official driver updates via the Windows Update API |
+| Privacy | 23 toggles (ads, tips, telemetry, Bing in Start, Recall, Copilot...). Original values saved; "Restore everything" button |
+| Security | Antivirus, Defender signatures/scan age/tamper protection, threats, firewall, UAC, SmartScreen, Secure Boot, TPM, HVCI, BitLocker, SMBv1, Guest, RDP, Windows support status, outdated apps |
+| Health | SMART health + SSD wear/temperature, battery wear, blue screens / unexpected shutdowns / app crashes (30 days), GPU driver age, Optimize drives, Repair Windows (DISM + SFC), battery report, DNS flush |
+| Settings | Restore points, weekly schedule (day/time, optional app updates), fleet folder, Undo center, install shortcuts |
+
+## Where CleanIT beats the paid cleaners
+- **Honest**: no registry cleaner, no RAM/game "booster", no fake "problems found" - every item is real and explained.
+- **Reversible**: restore point before changes; privacy/startup/services changes recorded in `State\*.json`; registry
+  keys backed up to `.reg` before removal; files go to the Recycle Bin.
+- **Safe deletes**: never follows junctions/symlinks/OneDrive placeholders; temp files younger than 24h are left alone;
+  locked files are skipped, not forced.
+- **Extras** most cleaners don't have: duplicate finder that ignores hard links, crash/blue-screen history, SSD wear,
+  Windows end-of-support warning, Windows/driver updates without third-party driver databases, multi-PC fleet reports.
+
+## Cleanup categories
+| Key | Default | Notes |
+|---|---|---|
+| UserTemp | on | All user profiles, files older than 24h |
+| WindowsTemp | on | C:\Windows\Temp, older than 24h |
+| WindowsUpdate | on | SoftwareDistribution\Download (services stopped/restarted) |
+| DeliveryOpt | on | Delivery Optimization peer cache |
+| CrashDumps | on | Minidumps, MEMORY.DMP, LiveKernelReports, WER reports |
+| OldLogs | on | CBS/DISM/WU logs older than 7 days (event logs untouched) |
+| Thumbnails | off | Explorer thumbnail/icon cache |
+| ShaderCache | off | DirectX/NVIDIA/AMD/Intel + Steam shader caches |
+| RecycleBin | off | All drives, all users (warning shown) |
+| DriverLeftovers | off | C:\NVIDIA, C:\AMD, NVIDIA downloader cache |
+| ComponentStore | off (deep) | DISM WinSxS cleanup, slow |
+| WindowsOld | off | Windows.old + upgrade leftovers via cleanmgr - removes rollback (warning shown) |
+| BrowserCache | on | Chrome, Edge, Brave, Vivaldi, Chromium, Opera/GX, Firefox, LibreWolf, Waterfox, INetCache |
+| Discord / Spotify / Teams / Slack / Zoom / VSCode | on | Caches only - logins, messages, offline songs untouched |
+| GameLaunchers | on | Steam web cache/dumps/logs, Epic web cache |
+| AdobeCache | off | Premiere/AE media cache |
+| DevCaches | off | npm, yarn, pip, NuGet, Gradle, Maven, Go, Cargo |
+
+## Command line
+```powershell
+.\CleanIT.ps1 -Scan                                  # reclaimable space (default categories)
+.\CleanIT.ps1 -Clean                                 # clean defaults (restore point first if enabled)
+.\CleanIT.ps1 -Clean -Deep -NoRestorePoint
+.\CleanIT.ps1 -Clean -Categories UserTemp,BrowserCache,Discord
+.\CleanIT.ps1 -Updates                               # winget app updates (honours the exclude list)
+.\CleanIT.ps1 -WindowsUpdates -Drivers               # Windows + driver updates
+.\CleanIT.ps1 -Report -Security                      # health + security report
+.\CleanIT.ps1 -Privacy                               # apply recommended privacy settings
+.\CleanIT.ps1 -UndoPrivacy -UndoStartup              # put back everything CleanIT changed
+.\CleanIT.ps1 -LargeFiles -Path D:\ -MinSizeMB 1000  # list only, never deletes
+.\CleanIT.ps1 -Duplicates -Path $env:USERPROFILE     # list only, never deletes
+.\CleanIT.ps1 -Optimize -Repair -QuickScan           # TRIM/defrag, DISM+SFC, Defender quick scan
+.\CleanIT.ps1 -ListCategories
+.\CleanIT.ps1 -ListBloat
+.\CleanIT.ps1 -InstallSchedule                       # weekly silent clean as SYSTEM (day/time from Settings)
+.\CleanIT.ps1 -RemoveSchedule
+.\CleanIT.ps1 -Install / -Uninstall                  # shortcuts + ProgramData copy
+.\CleanIT.ps1 -Fleet                                 # write this PC's report to the fleet folder now
+```
+
+## Files
+- `C:\ProgramData\CleanIT\Logs` - one log per run
+- `C:\ProgramData\CleanIT\settings.json`, `history.json`
+- `C:\ProgramData\CleanIT\State\` - original values for privacy/startup/services, removed apps, last update check
+- `C:\ProgramData\CleanIT\Backups\` - `.reg` backups of removed registry keys
+- The folder is locked down to Administrators/SYSTEM (read-only for users), because the weekly task runs scripts from it as SYSTEM.
+
+## Upgrading from PC Cleanup v1
+Run CleanIT once - it removes the old `PCCleanup Weekly` task and recreates the schedule as `CleanIT Weekly`.
+The old `C:\ProgramData\PCCleanup` folder (v1 logs and script copy) can be deleted by hand.
