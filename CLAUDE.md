@@ -28,6 +28,9 @@ Roadmap: `ROADMAP.md`.
   last results (`Disk.trashable`, `Apps.leftoverPaths`, `Startup.lastItems`).
 - Don't trigger permission prompts from the Dashboard/Security (login items via System Events only on the Startup page).
 - macOS version numbers jump 15 -> 26: compare positions in `releases` (Health.swift); add each autumn's release.
+- Releases: every GitHub release (vX.Y.Z, same tags as Windows) gets two extra files from `tools/release-assets.sh`:
+  `CleanIT-Windows.zip` and `CleanIT-Mac.zip` (README links use releases/latest/download/<name>). Never publish a separate
+  Mac-only release or a non-numeric tag: the Windows updater reads releases/latest and needs a `vX.Y.Z` tag.
 - Testing: `CFFIXED_USER_HOME=<fake home> CLEANIT_DATADIR=<temp> .build/release/CleanIT --clean --categories ...` against
   a fake home containing symlinks to a "precious" folder. UI: launch with `CLEANIT_DEBUG=1` and use
   `swift tools/debug.swift '<js>' out.png` to run JS in the page and save a snapshot. Page errors are logged as ERROR.
@@ -70,6 +73,11 @@ Roadmap: `ROADMAP.md`.
 - Never delete through reparse points; never touch event logs; **no registry cleaner**, no RAM/game "boosters".
 - Anything destructive: preview first, explicit confirmation in the UI, logged. Files go to the Recycle Bin;
   registry keys are `reg export`ed first.
+- Exception: the Free-up-space assistant deletes permanently (so space is really freed), but only plain FILES directly in
+  the Downloads folder that its own scan listed - never folders, never through junctions (`Remove-SpaceItems` enforces
+  this) - after a confirmation listing every file. Moving Steam games/VMs is explained step by step, never done by CleanIT.
+- Plain English everywhere: every finding says what to do and why (Recommended / Optional / Not needed, Important /
+  Recommended / Optional / Automatic). Old driver dates alone never mean "outdated".
 - Anything that changes system settings must be reversible and record the previous state under `State\`.
 - Never `New-Item -Force` on an existing registry key (it wipes it) - test with `Test-Path` first.
 - `[math]::Max/Min` with a long and an int literal picks Int32 and overflows - cast both to `[double]`.

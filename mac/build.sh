@@ -1,12 +1,14 @@
 #!/bin/bash
-# Builds CleanIT.app into mac/build/. Usage: ./build.sh [--debug] [--open]
+# Builds CleanIT.app into mac/build/. Usage: ./build.sh [--debug] [--zip] [--open]
+# Release builds are universal (Intel + Apple silicon). --zip also writes build/CleanIT-Mac.zip for GitHub releases.
 set -euo pipefail
 cd "$(dirname "$0")"
 CONFIG=release; [[ " $* " == *" --debug "* ]] && CONFIG=debug
 VERSION=$(sed -n 's/^let appVersion = "\(.*\)"/\1/p' Sources/CleanIT/Util.swift)
 
-swift build -c "$CONFIG"
-BIN="$(swift build -c "$CONFIG" --show-bin-path)/CleanIT"
+ARCH=(); [[ $CONFIG == release ]] && ARCH=(--arch arm64 --arch x86_64)
+swift build -c "$CONFIG" "${ARCH[@]}"
+BIN="$(swift build -c "$CONFIG" "${ARCH[@]}" --show-bin-path)/CleanIT"
 
 APP=build/CleanIT.app
 rm -rf "$APP"
@@ -46,6 +48,11 @@ PLIST
 
 # ad-hoc signature so macOS can identify the app (Full Disk Access, notifications)
 codesign --force --deep --sign - "$APP"
-echo "Built $APP ($VERSION)"
+echo "Built $APP ($VERSION, $(lipo -archs "$APP/Contents/MacOS/CleanIT"))"
+if [[ " $* " == *" --zip "* ]]; then
+  rm -f build/CleanIT-Mac.zip
+  ditto -c -k --keepParent "$APP" build/CleanIT-Mac.zip     # ditto keeps the signature and permissions intact
+  echo "Zipped build/CleanIT-Mac.zip"
+fi
 [[ " $* " == *" --open "* ]] && open "$APP"
 exit 0

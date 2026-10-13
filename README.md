@@ -3,9 +3,13 @@
 A transparent, no-snake-oil replacement for Avast Cleanup Premium / CCleaner for Windows 10/11.
 Two PowerShell files, no install required, no ads, no telemetry, everything logged and reversible.
 
-**On a Mac?** See [mac/README.md](mac/README.md) - CleanIT for macOS (early version).
+## Download
+| Your computer | Download | Then |
+|---|---|---|
+| **Windows 10/11** | [CleanIT-Windows.zip](https://github.com/Juicethekidd99/CleanIT/releases/latest/download/CleanIT-Windows.zip) | see [Quick start](#quick-start) below |
+| **Mac** (macOS 12 or newer) | [CleanIT-Mac.zip](https://github.com/Juicethekidd99/CleanIT/releases/latest/download/CleanIT-Mac.zip) | see [CleanIT for Mac](mac/README.md) |
 
-> **Status: beta (v2.4.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
+> **Status: beta (v2.5.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
 > uninstall leftovers, services, privacy changes) and the weekly task are new - leave "create a restore point"
 > switched on (default) and review every list before you click. Use at your own risk; see LICENSE.
 
@@ -13,7 +17,7 @@ Two PowerShell files, no install required, no ads, no telemetry, everything logg
 Windows 10 or 11, Windows PowerShell 5.1 (built in), administrator rights. winget (App Installer) for app updates.
 
 ## Quick start
-1. Download the repo (Code > Download ZIP) and extract it. Keep all files and the `web` folder together.
+1. Download **CleanIT-Windows.zip** (above) and extract it. Keep all files and the `web` folder together.
 2. Double-click `CleanIT.vbs` (or `Run-CleanIT.bat`) and approve the UAC prompt.
 3. CleanIT opens in its own app window. On the **Dashboard** click **Smart Scan**, then **Clean ...**.
 4. Optional: **Settings > Install** adds Start menu + desktop shortcuts (copies to `C:\ProgramData\CleanIT`).
@@ -46,7 +50,7 @@ If Windows blocks the downloaded files: right-click each > Properties > tick **U
 |---|---|
 | Dashboard | Health score (0-100), Smart Scan (junk + security + updates + startup + privacy), freed-space history, fleet view of all your PCs |
 | Clean | 22 junk categories in 3 groups (Windows / Browsers / Apps), size per category, shows which open apps block a full clean |
-| Disk | Space analyzer with drill-down and size bars; large-file finder ("not used in N days"); duplicate finder (SHA-256, hard-link aware). Files only ever go to the Recycle Bin, one tick at a time |
+| Disk | **Free up space** assistant: drive overview, already-unpacked archives and the Recycle Bin (safe wins, pre-ticked), old disk images/setup files and older versions of the same file to review, and step-by-step guides to move Steam games, VirtualBox VMs and Downloads to your emptier drive. Plus space analyzer with drill-down and size bars; large-file finder ("not used in N days"); duplicate finder (SHA-256, hard-link aware). Files only ever go to the Recycle Bin, one tick at a time |
 | Startup | Run keys, Startup folders, logon/boot scheduled tasks, auto-start services. Publisher + signature check (unsigned = orange). Undo all |
 | Apps | Bloatware remover (curated recommended list, hard blocklist for system parts, optional de-provisioning, reinstall via Store link). Uninstaller that finds leftover folders/registry keys afterwards |
 | Drivers | A plain-English **What to do** checklist (most important first, with Done buttons), a step-by-step BIOS guide for your board, GPU driver vs. the latest official NVIDIA driver (straight from NVIDIA), broken devices explained, BIOS age, older third-party drivers with official links, and removal of old unused driver packages. Never a third-party driver database |

@@ -546,6 +546,29 @@ $script:Actions = @{
             Get-DiskNodeDto $root
         } }
 
+    spaceScan = @{ Name = 'Looking for space to free'
+        Work = { param($P) Get-SpaceReport }
+        Finalize = {
+            param($Out)
+            $r = $Out | Select-Object -Last 1
+            $script:Cache.SpaceFiles = @{}
+            foreach ($i in @($r.Safe) + @($r.Review)) { if ($i) { $script:Cache.SpaceFiles[$i.Path] = $true } }
+            $r
+        } }
+
+    spaceDelete = @{ Name = 'Deleting files'
+        Prep = {
+            param($A)
+            $paths = @($A.paths | Where-Object { $script:Cache.SpaceFiles -and $script:Cache.SpaceFiles.ContainsKey([string]$_) } | ForEach-Object { [string]$_ })
+            if (-not $paths.Count) { throw 'Nothing selected - scan again.' }
+            @{ Paths = $paths }
+        }
+        Work = { param($P) Remove-SpaceItems $P.Paths } }
+
+    emptyBin = @{ Name = 'Emptying the Recycle Bin'
+        Prep = { param($A) $d = [string]$A.drive; if ($d -notmatch '^[A-Za-z]:?$') { throw 'Invalid drive.' }; @{ Drive = $d } }
+        Work = { param($P) Clear-DriveRecycleBin $P.Drive } }
+
     largeFiles = @{ Name = 'Finding large files'; Scan = $true
         Prep = {
             param($A)

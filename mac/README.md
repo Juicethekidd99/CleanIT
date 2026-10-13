@@ -9,10 +9,18 @@ everything logged, nothing removed that can't be put back (files, apps and lefto
 ## Requirements
 macOS 12 or newer (Intel or Apple silicon). To build: Xcode or the Command Line Tools (Swift 5.9+).
 
-## Build and run
+## Install (download)
+1. Download [CleanIT-Mac.zip](https://github.com/Juicethekidd99/CleanIT/releases/latest/download/CleanIT-Mac.zip) and double-click it to unzip.
+2. Drag **CleanIT** into your **Applications** folder.
+3. Open it. The first time, macOS says it can't check the app (it is not notarized by Apple yet): click **Done**, then open
+   **System Settings > Privacy & Security**, scroll down and click **Open Anyway** next to CleanIT. You only do this once.
+
+Works on Intel and Apple silicon Macs.
+
+## Build it yourself
 ```bash
 cd mac
-./build.sh --open          # builds mac/build/CleanIT.app and opens it
+./build.sh --open          # builds mac/build/CleanIT.app (universal) and opens it
 ```
 Then drag `build/CleanIT.app` into **Applications** (needed for the weekly clean and Full Disk Access).
 The build is ad-hoc signed; the first time, right-click CleanIT > **Open** if macOS asks.

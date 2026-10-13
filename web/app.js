@@ -416,11 +416,136 @@ async function cleanKeys(keys) {
 pages.disk = {
   title: 'Disk space',
   render(root) {
-    root.append(tabs('disk', [['space', 'Space analyzer'], ['large', 'Large files'], ['dups', 'Duplicate files']]));
-    const t = curTab('disk', 'space');
-    if (t === 'space') diskSpace(root); else if (t === 'large') diskLarge(root); else diskDups(root);
+    root.append(tabs('disk', [['free', 'Free up space'], ['space', 'Space analyzer'], ['large', 'Large files'], ['dups', 'Duplicate files']]));
+    const t = curTab('disk', 'free');
+    if (t === 'free') diskFree(root); else if (t === 'space') diskSpace(root); else if (t === 'large') diskLarge(root); else diskDups(root);
   }
 };
+
+// "Free up space" assistant: safe wins first, then things to review, then what to move to another drive.
+function loadSpace() {
+  return task('spacescan', async () => {
+    const r = await run('spaceScan', {}, prog('spacescan'));
+    S.cache.space = r;
+    S.sel.spaceSafe = new Set(r.Safe.map(i => i.Path));   // safe wins pre-ticked
+    S.sel.spaceReview = new Set();
+  });
+}
+function driveBar(d, best) {
+  const used = 100 - d.FreePct;
+  return h('div', { class: 'drive' },
+    h('div', { class: 'row' }, h('b', { text: d.Drive + (d.Label ? '  ' + d.Label : '') }),
+      d.Drive === best ? h('span', { class: 'pill OK', text: 'most free space' }) : null,
+      h('span', { class: 'spacer' }), h('span', { class: d.FreePct < 10 ? 'c-BAD' : d.FreePct < 20 ? 'c-WARN' : 'muted', text: fmtSize(d.Free) + ' free of ' + fmtSize(d.Size) })),
+    h('div', { class: 'bar big' }, h('i', { class: d.FreePct < 10 ? 'bad' : d.FreePct < 20 ? 'warn' : '', style: 'width:' + used.toFixed(1) + '%' })));
+}
+function moveSteps(kind, item, target) {
+  const t = target || 'your other drive';
+  const steps = {
+    game: ['Open Steam and go to Steam > Settings > Storage.',
+      'If ' + t + ' is not listed at the top, click the drop-down > Add Drive > pick ' + t + '.',
+      'Select the drive the game is on now, tick "' + item.Name + '", click Move (the "..." button) and pick ' + t + '.',
+      'Wait until Steam finishes - the game keeps working and does not need to download again.'],
+    vm: ['Shut down the virtual machine "' + item.Name + '" completely (not saved/paused).',
+      'In VirtualBox Manager, right-click "' + item.Name + '" > Move...',
+      'Choose a folder on ' + t + ' (for example ' + t + '\\VirtualBox VMs) and click Move.',
+      'Do not drag the folder in File Explorer - VirtualBox would lose track of the machine.'],
+    downloads: ['Open File Explorer, right-click Downloads (left side) > Properties > Location tab.',
+      'Click Move... and pick a folder on ' + t + ', e.g. ' + t + '\\Downloads.',
+      'Click Apply and answer Yes when Windows asks to move the files.']
+  }[kind];
+  return dialog(kind === 'game' ? 'Move "' + item.Name + '" to ' + t : kind === 'vm' ? 'Move "' + item.Name + '" to ' + t : 'Move your Downloads folder to ' + t,
+    h('ol', { class: 'steps' }, steps.map(s => h('li', { text: s }))), [{ id: 'x', text: 'Got it' }]);
+}
+function diskFree(root) {
+  const r = S.cache.space;
+  if (!r) autoLoad('spacescan', loadSpace);
+  root.append(h('div', { class: 'card' },
+    h('div', { class: 'row' }, h('h3', { style: 'margin:0', text: 'Your drives' }), h('span', { class: 'spacer' }), btn('Scan again', loadSpace, '', 'spacescan')),
+    progLine('spacescan') || progLine('spacedel'),
+    r ? r.Drives.map(d => driveBar(d, r.Best)) : h('div', { class: 'empty', text: 'Looking for space you can free...' })));
+  if (!r) return;
+  const sum = (list, sel) => list.filter(i => sel.has(i.Path)).reduce((a, i) => a + i.Size, 0);
+  const safeSel = S.sel.spaceSafe, revSel = S.sel.spaceReview;
+  const total = sum(r.Safe, safeSel) + sum(r.Review, revSel);
+  const itemRow = (i, sel, hideWhy) => h('label', { class: 'opt check-row' },
+    h('input', { type: 'checkbox', checked: sel.has(i.Path), onchange: e => { e.target.checked ? sel.add(i.Path) : sel.delete(i.Path); render(); } }),
+    h('div', { class: 't' }, h('b', { text: i.Name }), hideWhy ? null : h('div', { text: i.Why })),
+    h('span', { class: 'size', text: fmtSize(i.Size) }),
+    btn('Show', e => { e.preventDefault(); openThing('path', { path: i.Path }); }, 'link'));
+
+  // Delete bar
+  root.append(h('div', { class: 'card sticky-action' }, h('div', { class: 'row' },
+    h('div', {}, h('b', { text: total ? 'Ticked: ' + fmtSize(total) + ' will be freed' : 'Tick what you want to remove' }),
+      h('div', { class: 'muted small', text: 'Deleted for good (not moved to the Recycle Bin), so the space is really freed. Only files are deleted - never folders.' })),
+    h('span', { class: 'spacer' }),
+    btn('Delete ticked', deleteSpaceItems, 'danger', 'spacedel', !total))));
+
+  // Safe
+  const bins = r.Bins || [];
+  root.append(h('div', { class: 'card' }, h('h3', {}, 'Safe to delete', h('small', { text: fmtSize(r.Safe.reduce((a, i) => a + i.Size, 0) + bins.reduce((a, b) => a + b.Size, 0)) })),
+    !r.Safe.length && !bins.length ? h('div', { class: 'c-OK', text: 'Nothing obvious to remove.' }) : null,
+    bins.map(b => h('div', { class: 'opt' }, h('div', { class: 't' }, h('b', { text: 'Recycle Bin on ' + b.Drive }),
+      h('div', { text: 'Files you already deleted. They still take space until the bin is emptied.' })),
+      h('span', { class: 'size', text: fmtSize(b.Size) }),
+      btn('Empty', async () => {
+        if (!await confirmBox('Empty the Recycle Bin on ' + b.Drive + '?', 'Frees ' + fmtSize(b.Size) + '. Files in it are gone for good.', 'Empty', true)) return;
+        await task('bin', async () => { const f = await run('emptyBin', { drive: b.Drive }); toast('Freed ' + fmtSize(f) + '.'); });
+        loadSpace();
+      }, 'primary', 'bin'))),
+    r.Safe.map(i => itemRow(i, safeSel)),
+    h('div', { class: 'opt' }, h('div', { class: 't' }, h('b', { text: 'Junk files (temp files, caches, update leftovers)' }),
+      h('div', { text: 'Handled on the Clean page - safe and automatic.' })), btn('Open Clean', () => go('clean'), 'link'))));
+
+  // Review
+  if (r.Review.length) {
+    const byKind = {};
+    r.Review.forEach(i => (byKind[i.Kind] = byKind[i.Kind] || []).push(i));
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Worth a look', h('small', { text: fmtSize(r.Review.reduce((a, i) => a + i.Size, 0)) + ' in your Downloads - your call' })),
+      h('p', { class: 'muted small', text: 'Nothing here is ticked for you. These are your own files; delete the ones you know you no longer need.' }),
+      Object.entries(byKind).map(([k, list]) => [
+        h('div', { class: 'row', style: 'margin:12px 0 4px' }, h('b', { text: k === 'Disk image' ? 'Disk images (.iso etc.)' : k === 'Installer' ? 'Old setup files' : 'Big archives' }),
+          h('span', { class: 'muted small', text: fmtSize(list.reduce((a, i) => a + i.Size, 0)) }), h('span', { class: 'spacer' }),
+          btn('Tick all', () => { list.forEach(i => revSel.add(i.Path)); render(); }, 'link'),
+          btn('None', () => { list.forEach(i => revSel.delete(i.Path)); render(); }, 'link')),
+        // same reason for every file in the group? say it once instead of on every row
+        list.every(i => i.Why === list[0].Why) ? h('div', { class: 'muted small', text: list[0].Why }) : null,
+        list.map(i => itemRow(i, revSel, list.every(x => x.Why === list[0].Why)))])));
+  }
+
+  // Move to another drive
+  const sys = r.SystemDrive, best = r.Best;
+  const sysDrive = r.Drives.find(d => d.Drive === sys), bestDrive = r.Drives.find(d => d.Drive === best);
+  const canMove = best && best !== sys && bestDrive && sysDrive && bestDrive.Free > sysDrive.Free;
+  const games = (r.Games || []).filter(g => g.Drive === sys);
+  const vms = (r.VMs || []).filter(v => v.Drive === sys);
+  if (canMove && (games.length || vms.length || r.DownloadsSize > 20 * 1073741824)) {
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Move big things to ' + best, h('small', { text: best + ' has ' + fmtSize(bestDrive.Free) + ' free' })),
+      h('p', { class: 'muted small', text: 'Moving keeps everything working - nothing is deleted. Use the steps for each one; CleanIT does not move these itself because Steam and VirtualBox need to do it to keep track of them.' }),
+      games.length ? [h('b', { text: 'Steam games on ' + sys }),
+        games.map(g => h('div', { class: 'opt' }, h('div', { class: 't' }, h('b', { text: g.Name })), h('span', { class: 'size', text: fmtSize(g.Size) }),
+          btn('How to move', () => moveSteps('game', g, best), 'link')))] : null,
+      vms.length ? [h('b', { text: 'Virtual machines on ' + sys }),
+        vms.map(v => h('div', { class: 'opt' }, h('div', { class: 't' }, h('b', { text: v.Name }), h('div', { class: 'small muted', text: v.Path })), h('span', { class: 'size', text: fmtSize(v.Size) }),
+          btn('How to move', () => moveSteps('vm', v, best), 'link')))] : null,
+      r.DownloadsSize > 20 * 1073741824 ? h('div', { class: 'opt' }, h('div', { class: 't' }, h('b', { text: 'Your Downloads folder' }),
+          h('div', { text: 'Move the whole Downloads folder to ' + best + ' so new downloads stop filling ' + sys + '.' })),
+        h('span', { class: 'size', text: fmtSize(r.DownloadsSize) }), btn('How to move', () => moveSteps('downloads', null, best), 'link')) : null));
+  }
+}
+async function deleteSpaceItems() {
+  const r = S.cache.space;
+  const list = r.Safe.filter(i => S.sel.spaceSafe.has(i.Path)).concat(r.Review.filter(i => S.sel.spaceReview.has(i.Path)));
+  const total = list.reduce((a, i) => a + i.Size, 0);
+  if (!await confirmBox('Delete ' + list.length + ' file' + (list.length > 1 ? 's' : '') + ' for good?', [
+    h('p', { text: 'Frees ' + fmtSize(total) + '. These are deleted permanently - not moved to the Recycle Bin.' }),
+    bullets(list.map(i => i.Name + '  (' + fmtSize(i.Size) + ')'), 20)], 'Delete ' + fmtSize(total), true)) return;
+  await task('spacedel', async () => {
+    const res = await run('spaceDelete', { paths: list.map(i => i.Path) }, prog('spacedel'));
+    toast('Freed ' + fmtSize(res.Freed) + '.');
+  });
+  loadSpace();
+}
 function pathInput(key, def) {
   S.cache[key] = S.cache[key] || def;
   const id = 'places-' + key;
