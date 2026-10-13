@@ -3,6 +3,8 @@
 A transparent, no-snake-oil replacement for Avast Cleanup Premium / CCleaner for Windows 10/11.
 Two PowerShell files, no install required, no ads, no telemetry, everything logged and reversible.
 
+**On a Mac?** See [mac/README.md](mac/README.md) - CleanIT for macOS (early version).
+
 > **Status: beta (v2.4.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
 > uninstall leftovers, services, privacy changes) and the weekly task are new - leave "create a restore point"
 > switched on (default) and review every list before you click. Use at your own risk; see LICENSE.

@@ -13,6 +13,25 @@ Commit identity for this repo is the GitHub username + noreply email - never the
 - `CleanIT.vbs` - launcher with no console window (ShellExecute runas, hidden). `Run-CleanIT.bat` just calls it.
 Roadmap: `ROADMAP.md`.
 
+## macOS version (`mac/`)
+- Swift package (`mac/Package.swift`), built into `mac/build/CleanIT.app` by `mac/build.sh` (ad-hoc signed). Bundle id
+  `io.github.juicethekidd99.cleanit`. Targets macOS 12+, Swift 5 language mode, no third-party dependencies.
+- The window is a WKWebView showing `mac/web/` (index.html, app.js, mac.css) + the shared `web/app.css` (copied in at build).
+  `mac/web/app.js` is a fork of `web/app.js`: same helpers and look; `api()` calls `window.webkit.messageHandlers.api`
+  with the same `/api/...` paths. Engine side: `Bridge.swift` (routes + actions table), `Jobs.swift` (background jobs).
+- Engine files: `Clean.swift` (categories are data, like `$script:CategoryDefs`), `Disk.swift`, `Startup.swift`,
+  `Apps.swift`, `Updates.swift`, `Health.swift` (Security, Health, Dashboard), `Schedule.swift` (weekly LaunchAgent).
+- Mac rules: never follow symlinks; user files, apps and leftovers go to the Trash (`trashItem` / `NSWorkspace.recycle`);
+  caches are deleted in place but the cache folder itself stays; skip caches of running apps (owner bundle id);
+  startup changes only use `launchctl disable/enable` (never edit/delete plists) and are recorded in `State/startup.json`;
+  admin actions go through `shAdmin` (macOS password prompt). Paths sent back by the page must come from the engine's
+  last results (`Disk.trashable`, `Apps.leftoverPaths`, `Startup.lastItems`).
+- Don't trigger permission prompts from the Dashboard/Security (login items via System Events only on the Startup page).
+- macOS version numbers jump 15 -> 26: compare positions in `releases` (Health.swift); add each autumn's release.
+- Testing: `CFFIXED_USER_HOME=<fake home> CLEANIT_DATADIR=<temp> .build/release/CleanIT --clean --categories ...` against
+  a fake home containing symlinks to a "precious" folder. UI: launch with `CLEANIT_DEBUG=1` and use
+  `swift tools/debug.swift '<js>' out.png` to run JS in the page and save a snapshot. Page errors are logged as ERROR.
+
 ## Architecture notes
 - Window: Edge `--app=` window with its own profile (`%LOCALAPPDATA%\CleanIT\Window`), started through a temp .lnk
   opened by explorer.exe so it runs as the normal user, not admin. Falls back to the default browser.

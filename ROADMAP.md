@@ -28,6 +28,14 @@ and skip the snake oil.
 - [x] v2.3.0: built-in updater from GitHub releases (+ optional auto-update in the weekly clean); fixed install-folder permissions
 - [x] v2.4.0: plain-English guidance - Drivers to-do list, BIOS guide, Recommended/Optional/Not needed, update importance labels
 
+## macOS version (mac/)
+- [x] v0.1.0: Swift app with the shared web UI - Clean, Disk, Startup, Apps, Updates (macOS + Homebrew), Security, Health,
+      weekly clean, CLI
+- [ ] Fleet reports (iCloud Drive folder instead of OneDrive) + fleet view shared with Windows PCs
+- [ ] Self-updater from GitHub releases (zip with CleanIT.app; verify signature)
+- [ ] Developer ID signing + notarization so the download opens without warnings
+- [ ] Unavailable simulators (`xcrun simctl delete unavailable`), old iOS backups viewer, Mac App Store updates via `mas`
+
 ## Phase 4 - Packaging (next)
 - Compile to `CleanIT.exe` with PS2EXE (custom icon, requireAdmin manifest) - note: the core is dot-sourced, so either
   bundle it or inline it at build time
