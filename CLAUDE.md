@@ -28,7 +28,7 @@ Roadmap: `ROADMAP.md`.
   last results (`Disk.trashable`, `Apps.leftoverPaths`, `Startup.lastItems`).
 - Don't trigger permission prompts from the Dashboard/Security (login items via System Events only on the Startup page).
 - macOS version numbers jump 15 -> 26: compare positions in `releases` (Health.swift); add each autumn's release.
-- Releases: every GitHub release (vX.Y.Z, same tags as Windows) gets two extra files from `tools/release-assets.sh`:
+- Releases: every GitHub release (vX.Y.Z, same tags as Windows) gets two extra files from `tools/release-assets.sh vX.Y.Z`:
   `CleanIT-Windows.zip` and `CleanIT-Mac.zip` (README links use releases/latest/download/<name>). Never publish a separate
   Mac-only release or a non-numeric tag: the Windows updater reads releases/latest and needs a `vX.Y.Z` tag.
 - Testing: `CFFIXED_USER_HOME=<fake home> CLEANIT_DATADIR=<temp> .build/release/CleanIT --clean --categories ...` against
@@ -64,7 +64,13 @@ Roadmap: `ROADMAP.md`.
   Releasing = bump `$script:Version` + README status, commit, push, `gh release create vX.Y.Z --notes-file`.
 - Folder ACL: `Protect-DataDir` locks the folder only and `icacls /reset`s children to inherit (never `/T` with (OI)(CI)
   grants - that left files with an empty DACL in v2.0-2.2). session.json stays admin-only.
-- Weekly task runs as SYSTEM: `-Clean -Silent -NoRestorePoint -Scheduled`; then starts `CleanIT Notify` (Users group).
+- Weekly task runs as SYSTEM: `-Clean -Silent -NoRestorePoint -Scheduled` (+ `-QuickScan` when `ScanWithClean`); then
+  starts `CleanIT Notify` (Users group). `CleanIT Full Scan` task (every 4 weeks, SYSTEM) runs `-FullScan`.
+- Protect page = controls on top of Microsoft Defender, never our own AV engine. `$script:ProtectSettings` lists the
+  Set-MpPreference switches; `Set-ProtectSetting` saves the original value once in `State\protect.json` and turning a
+  switch off restores that original. Defender controls only apply when `AMRunningMode` is Normal (another AV = passive).
+  Quarantine restore only accepts threat names from the server's last `threats` result (`$script:Cache.Quarantine`).
+  Never change Defender settings, start scans, enable Sandbox or run an offline scan on the dev PC without asking.
 
 ## Hard rules
 - Must run on stock **Windows PowerShell 5.1** (no `??`, ternary, `-Parallel`, PS7-only cmdlets). C# must be C# 5.

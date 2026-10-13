@@ -8,8 +8,9 @@
   --radius: 12px;
   color-scheme: light;
 }
+/* Dark colours: used when Windows is in dark mode (unless the user picked Light), or when the user picked Dark. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0b1017; --panel: #121a24; --panel-2: #172130; --line: #243142; --text: #e2e8f0; --muted: #94a3b8;
     --nav: #070b11; --nav-text: #94a3b8; --nav-active: #172130;
     --accent-soft: #134e4a; --ok-soft: #14532d55; --warn-soft: #78350f55; --bad-soft: #7f1d1d55; --info-soft: #33415555;
@@ -18,6 +19,15 @@
     color-scheme: dark;
   }
 }
+:root[data-theme="dark"] {
+  --bg: #0b1017; --panel: #121a24; --panel-2: #172130; --line: #243142; --text: #e2e8f0; --muted: #94a3b8;
+  --nav: #070b11; --nav-text: #94a3b8; --nav-active: #172130;
+  --accent-soft: #134e4a; --ok-soft: #14532d55; --warn-soft: #78350f55; --bad-soft: #7f1d1d55; --info-soft: #33415555;
+  --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --info: #94a3b8;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+  color-scheme: dark;
+}
+:root[data-theme="light"] { color-scheme: light; }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body { font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
@@ -212,3 +222,27 @@ pre.notes { white-space: pre-wrap; font: 13px/1.5 "Segoe UI", system-ui, sans-se
 .check-row input { flex: none; }
 .opt .size { font-weight: 600; white-space: nowrap; min-width: 80px; text-align: right; }
 .sticky-action { position: sticky; top: 0; z-index: 5; border-color: var(--accent-2); }
+
+/* apps winget can't check */
+.unknown-apps summary { cursor: pointer; font-weight: 600; }
+.unknown-apps[open] summary { margin-bottom: 8px; }
+
+/* antivirus notice */
+.av-banner { border-color: var(--warn); background: var(--warn-soft); }
+code.path { font: 12.5px Consolas, monospace; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; }
+
+/* Protect page */
+.protect-hero { display: flex; gap: 18px; align-items: flex-start; }
+.protect-hero .shield { width: 64px; height: 64px; flex: none; border-radius: 16px; display: flex; align-items: center; justify-content: center; }
+.protect-hero .shield svg { width: 38px; height: 38px; }
+.protect-hero .shield.ok { background: var(--ok-soft); color: var(--ok); }
+.protect-hero .shield.bad { background: var(--bad-soft); color: var(--bad); }
+.protect-hero .row { flex-wrap: wrap; }
+.opt .t div.c-WARN { color: var(--warn); }
+
+/* Segmented choice (Settings > Theme) */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: var(--panel-2); flex: none; }
+.seg button { border: 0; background: none; padding: 6px 14px; cursor: pointer; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button:hover { color: var(--text); }
+.seg button.active { background: var(--accent); color: var(--accent-ink); }

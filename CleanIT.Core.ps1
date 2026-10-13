@@ -3,7 +3,7 @@
 # every system change is reversible and its previous state is recorded under DataDir\State.
 
 $script:AppName     = 'CleanIT'
-$script:Version     = '2.5.0'
+$script:Version     = '2.7.2'
 $script:CorePath    = $PSCommandPath
 if ($env:CLEANIT_FAKE_VERSION) { $script:Version = $env:CLEANIT_FAKE_VERSION }   # updater tests only
 $script:DataDir     = $env:CLEANIT_DATADIR
@@ -800,6 +800,10 @@ function Get-DefaultSettings {
         ShowMicrosoft   = $false        # show Microsoft tasks/services in Startup
         UpdateCheck     = $true         # look for a newer CleanIT on GitHub (at most every 6 h)
         AutoUpdate      = $false        # install updates automatically during the weekly clean
+        AvNoticeHidden  = $false        # user dismissed the third-party antivirus notice
+        ShutdownsSeenUntil = ''         # unexpected shutdowns before this time were reviewed (Health > Got it)
+        ScanWithClean   = $false        # Defender quick scan as part of the weekly clean
+        Theme           = 'auto'        # app colours: auto (match Windows) / light / dark
     }
 }
 
@@ -1310,6 +1314,10 @@ function Invoke-CategoryClean {
     Write-Log "Cleaning: $($Cat.Name)"
     $running = Get-RunningForCategory $Cat
     if ($running.Count) { Write-Log ('  Close these for a full clean: ' + ($running -join ', ')) 'WARN' }
+    # Files an open app is using can't be deleted - remember how much, so the UI can explain the difference
+    # between the scan estimate and what was actually freed.
+    $script:LastSkippedBytes = 0
+    $script:LastBusyApps = @($running)
     if ($Cat.Before) { & $Cat.Before | Out-Null }
     $freed = 0
     try {
@@ -1323,12 +1331,12 @@ function Invoke-CategoryClean {
                     Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
                     $freed += $f.Length; $deleted++
                 }
-                catch { $skipped++ }
+                catch { $skipped++; $script:LastSkippedBytes += $f.Length }
                 $i++
                 if (($i % 250) -eq 0) { Invoke-UiPump; if (Test-BgCancel) { break } }
             }
             Remove-EmptyFolders $Cat
-            Write-Log ('  {0} files removed, {1} skipped (in use or protected)' -f $deleted, $skipped)
+            Write-Log ('  {0} files removed, {1} skipped (in use or protected, {2})' -f $deleted, $skipped, (Format-Size $script:LastSkippedBytes))
         }
     }
     finally {
@@ -1365,7 +1373,8 @@ function Invoke-CleanRun {
     param([string[]]$Keys, [string]$Source = 'Manual', [switch]$RestorePoint)
     $cats = @($script:CategoryDefs | Where-Object { $Keys -contains $_.Key })
     if ($RestorePoint) { [void](New-CleanITRestorePoint 'Before cleanup') }
-    $grand = 0
+    $grand = 0; $skippedTotal = 0
+    $busy = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $details = New-Object System.Collections.Generic.List[object]
     $i = 0
     foreach ($c in $cats) {
@@ -1373,12 +1382,17 @@ function Invoke-CleanRun {
         Set-BgProgress ([int](100 * $i / [math]::Max(1, $cats.Count))) "Cleaning $($c.Name)"
         $f = [double](Invoke-CategoryClean $c | Select-Object -Last 1)
         $grand += $f
-        $details.Add([pscustomobject]@{ Key = $c.Key; Freed = $f })
+        $sk = [double]$script:LastSkippedBytes
+        $skippedTotal += $sk
+        if ($sk -gt 0) { foreach ($a in $script:LastBusyApps) { [void]$busy.Add($a) } }
+        $details.Add([pscustomobject]@{ Key = $c.Key; Freed = $f; Skipped = $sk })
         $i++
     }
     Write-Log "All done. Total freed: $(Format-Size $grand)" 'OK'
+    $busyArr = New-Object string[] $busy.Count; $busy.CopyTo($busyArr)
+    if ($skippedTotal -ge 1MB) { Write-Log ("{0} was in use and could not be removed{1}." -f (Format-Size $skippedTotal), $(if ($busy.Count) { ' - close ' + ($busyArr -join ', ') + ' and clean again' } else { ' (files open in Windows or another app)' })) 'WARN' }
     Add-HistoryEntry $Source $grand $details.ToArray()
-    [pscustomobject]@{ Freed = [double]$grand; Details = $details.ToArray() }
+    [pscustomobject]@{ Freed = [double]$grand; Skipped = [double]$skippedTotal; BusyApps = $busyArr; Details = $details.ToArray() }
 }
 
 # ---------------------------------------------------------------------------
@@ -1957,11 +1971,14 @@ function Get-WingetUpgrades {
     $exclude = @((Get-Settings).WingetExclude)
     $lines = @(Invoke-Winget @('upgrade', '--include-unknown', '--accept-source-agreements'))
     $rows = @(ConvertFrom-WingetTable $lines)
-    Set-LastCheck 'AppUpdates' @($rows | Where-Object { $exclude -notcontains $_.Id }).Count
+    # Apps that don't report their installed version (Roblox...) always look "outdated" to winget, even right after
+    # updating, and usually update themselves. They are listed separately and never counted as waiting updates.
+    Set-LastCheck 'AppUpdates' @($rows | Where-Object { $exclude -notcontains $_.Id -and $_.Version -ne 'Unknown' }).Count
     foreach ($r in $rows) {
         $adv = Get-AppUpdateAdvice $r.Id $r.Name $r.Version
         $r | Add-Member -NotePropertyName Importance -NotePropertyValue $adv.Importance
         $r | Add-Member -NotePropertyName Why -NotePropertyValue $adv.Why
+        $r | Add-Member -NotePropertyName UnknownVersion -NotePropertyValue ($r.Version -eq 'Unknown')
         $r | Add-Member -NotePropertyName Excluded -NotePropertyValue ($exclude -contains $r.Id) -PassThru
     }
 }
@@ -1981,7 +1998,8 @@ function Invoke-WingetUpgrade {
 
 function Invoke-AllAppUpdates {
     if (-not (Test-Winget)) { Write-Log 'winget not found - install App Installer from the Microsoft Store.' 'WARN'; return }
-    $ids = @(Get-WingetUpgrades | Where-Object { -not $_.Excluded } | ForEach-Object { $_.Id })
+    # skip unknown-version apps: they would be reinstalled every single run for nothing
+    $ids = @(Get-WingetUpgrades | Where-Object { -not $_.Excluded -and -not $_.UnknownVersion } | ForEach-Object { $_.Id })
     if (-not $ids.Count) { Write-Log 'All apps are up to date.' 'OK'; return }
     Invoke-WingetUpgrade $ids
 }
@@ -2198,6 +2216,335 @@ function Get-WindowsSupportStatus {
         return [pscustomobject]@{ Level = 'WARN'; Text = 'Windows 11 24H2 support ends Oct 13, 2026 - install 25H2 from Windows Update.' }
     }
     [pscustomobject]@{ Level = 'OK'; Text = "Windows 11 (build $b) is in support." }
+}
+
+# Third-party antivirus (Avast, AVG, Norton...) often blocks or slows CleanIT because it is a PowerShell tool that
+# touches system areas. We can't change their settings (they protect themselves), so we detect them and explain
+# exactly how to add an exception in that product.
+$script:AvExceptionSteps = @(
+    @('Avast|AVG', 'Open {0} > Menu (top right) > Settings > General > Exceptions > Add exception. Paste each folder below and click Add exception.')
+    @('Norton', 'Open Norton > Settings > Antivirus > Scans and Risks > "Items to Exclude from Scans" > Configure > Add Folders. Add each folder below.')
+    @('McAfee', 'Open McAfee > My Protection > Real-Time Scanning > Excluded Files > Add file/folder. Add each folder below.')
+    @('Bitdefender', 'Open Bitdefender > Protection > Antivirus > Settings > Manage exceptions > + Add an exception. Add each folder below.')
+    @('Kaspersky', 'Open Kaspersky > Settings > Security settings > Threats and Exclusions > Manage exclusions > Add. Add each folder below.')
+    @('ESET', 'Open ESET > Setup > Advanced setup > Detection engine > Exclusions > Performance exclusions > Edit > Add. Add each folder below.')
+    @('Malwarebytes', 'Open Malwarebytes > Settings > Allow List > Add > Allow a file or folder. Add each folder below.')
+    @('Webroot', 'Open Webroot > PC Security > Block/Allow Files > Add File... and allow CleanIT''s files in the folders below.')
+    @('Sophos', 'Open Sophos > Settings > Exclusions (may need admin access in Sophos Central). Add each folder below.')
+    @('Trend Micro', 'Open Trend Micro > Settings (gear) > Exception Lists > Programs/folders > Add. Add each folder below.')
+)
+
+function Get-ThirdPartyAntivirus {
+    $folders = New-Object System.Collections.Generic.List[string]
+    $folders.Add($script:DataDir)
+    $here = Split-Path -Parent $script:CorePath
+    if ($here -and -not $here.Equals($script:DataDir, [StringComparison]::OrdinalIgnoreCase)) { $folders.Add($here) }
+    $products = @(Invoke-WithTimeout 'Antivirus list (Security Center)' { Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct } 15 @())
+    foreach ($p in $products) {
+        $name = [string]$p.displayName
+        if (-not $name -or $name -match 'Windows Defender|Microsoft Defender') { continue }
+        $enabled = ((($p.productState -shr 12) -band 0xF) -eq 1)
+        $steps = 'Open {0}, find its Exceptions / Exclusions / Allow list setting, and add each folder below.'
+        foreach ($s in $script:AvExceptionSteps) { if ($name -match $s[0]) { $steps = $s[1]; break } }
+        [pscustomobject]@{ Name = $name; Enabled = $enabled; Steps = ($steps -f $name); Folders = $folders.ToArray() }
+    }
+}
+
+# Messages Windows/antivirus give when they block a script - turned into something a person can act on.
+function Get-AvBlockHint {
+    param([string]$Message)
+    if ($Message -match '(?i)malicious content|blocked by your antivirus|contains a virus|potentially unwanted|virus or potentially|AMSI') {
+        return 'Your antivirus blocked this part of CleanIT. Add an exception for CleanIT''s folders (Dashboard > antivirus notice shows how) and try again.'
+    }
+    $null
+}
+
+# ---------------------------------------------------------------------------
+# CleanIT Protect - an Avast-style control panel on top of Microsoft Defender's engine.
+# We never build our own malware detection: Defender's engine + Microsoft's threat intelligence do that.
+# Every setting change records the previous value in State\protect.json so it can be put back.
+# ---------------------------------------------------------------------------
+# Key, Name, Mp preference, value when ON, value when OFF (Windows default), recommended?, plain description, warning
+$script:ProtectSettings = @(
+    [pscustomobject]@{ Key = 'PUA'; Name = 'Block potentially unwanted apps (PUA)'; Pref = 'PUAProtection'; On = 1; Off = 0; Recommended = $true
+        Description = 'Blocks adware, bundled junk, browser hijackers, crypto miners and sketchy "free" installers - common in game repacks and download sites.'
+        Warning = '' }
+    [pscustomobject]@{ Key = 'Network'; Name = 'Network protection'; Pref = 'EnableNetworkProtection'; On = 1; Off = 0; Recommended = $true
+        Description = 'Blocks any app (not just Edge) from connecting to known malware, phishing and scam websites.'
+        Warning = '' }
+    [pscustomobject]@{ Key = 'Ransomware'; Name = 'Ransomware protection (Controlled folder access)'; Pref = 'EnableControlledFolderAccess'; On = 1; Off = 0; Recommended = $false
+        Description = 'Only trusted programs may change files in Documents, Pictures, Videos, Music, Desktop and Favorites - stops ransomware from encrypting them.'
+        Warning = 'Some games and apps that save into Documents may be blocked until you allow them (Windows shows a notification; allow them in Windows Security > Ransomware protection).' }
+    [pscustomobject]@{ Key = 'CloudHigh'; Name = 'Stronger cloud blocking'; Pref = 'CloudBlockLevel'; On = 2; Off = 0; Recommended = $false
+        Description = 'Defender''s cloud blocks suspicious unknown files more aggressively.'
+        Warning = 'Can occasionally block small, legitimate tools from unknown developers.' }
+)
+
+function Get-ProtectSaved {
+    $h = @{}
+    $j = Read-JsonFile (Get-StatePath 'protect')
+    if ($j) { foreach ($p in $j.PSObject.Properties) { $h[$p.Name] = $p.Value } }
+    $h
+}
+
+function Get-DefenderActive {
+    # Defender's settings only matter when it is the active antivirus (not "passive" next to Avast etc.)
+    $s = Invoke-WithTimeout 'Defender status' { Get-MpComputerStatus } 20
+    [pscustomobject]@{ Status = $s; Active = [bool]($s -and [string]$s.AMRunningMode -eq 'Normal') }
+}
+
+function Get-ProtectStatus {
+    $d = Get-DefenderActive
+    $s = $d.Status
+    $pref = Invoke-WithTimeout 'Defender settings' { Get-MpPreference } 20
+    $saved = Get-ProtectSaved
+    $settings = foreach ($x in $script:ProtectSettings) {
+        $v = $null; if ($pref) { $v = [int]$pref.($x.Pref) }
+        $state = 'Off'
+        if ($v -eq $x.On) { $state = 'On' } elseif ($x.Key -in @('PUA', 'Network', 'Ransomware') -and $v -eq 2) { $state = 'Audit' }
+        [pscustomobject]@{ Key = $x.Key; Name = $x.Name; Description = $x.Description; Warning = $x.Warning; Recommended = $x.Recommended
+                           State = $state; Value = $v; ChangedByCleanIT = $saved.ContainsKey($x.Key) }
+    }
+    $fmt = { param($t) if ($t -and ([datetime]$t).Year -gt 2000) { ([datetime]$t).ToString('s') } else { $null } }
+    $other = @(Get-ThirdPartyAntivirus | Where-Object { $_.Enabled } | ForEach-Object { $_.Name })
+    [pscustomobject]@{
+        DefenderActive = $d.Active; OtherAntivirus = $other
+        RealTime = [bool]($s -and $s.RealTimeProtectionEnabled); Behavior = [bool]($s -and $s.BehaviorMonitorEnabled)
+        Tamper = [bool]($s -and $s.IsTamperProtected); SignatureAge = $(if ($s) { [int]$s.AntivirusSignatureAge } else { -1 })
+        SignatureVersion = $(if ($s) { [string]$s.AntivirusSignatureVersion } else { '' })
+        LastQuick = (& $fmt $(if ($s) { $s.QuickScanEndTime })); LastFull = (& $fmt $(if ($s) { $s.FullScanEndTime }))
+        Settings = @($settings); Schedule = (Get-ProtectSchedule)
+    }
+}
+
+function Set-ProtectSetting {
+    param([string]$Key, [bool]$On)
+    $x = $script:ProtectSettings | Where-Object { $_.Key -eq $Key } | Select-Object -First 1
+    if (-not $x) { throw "Unknown protection: $Key" }
+    $saved = Get-ProtectSaved
+    $pref = Get-MpPreference -ErrorAction Stop
+    $cur = [int]$pref.($x.Pref)
+    if ($On) {
+        if (-not $saved.ContainsKey($Key)) { $saved[$Key] = $cur }   # remember the original only once
+        $target = $x.On
+    }
+    else {
+        $target = $x.Off
+        if ($saved.ContainsKey($Key)) { $target = [int]$saved[$Key]; $saved.Remove($Key) }
+    }
+    $params = @{ $x.Pref = $target; ErrorAction = 'Stop' }
+    Set-MpPreference @params
+    Write-JsonFile (Get-StatePath 'protect') ([pscustomobject]$saved)
+    $verb = 'turned off (back to how it was)'; if ($On) { $verb = 'turned on' }
+    Write-Log "Protect: $($x.Name) $verb." 'OK'
+}
+
+function Restore-ProtectSettings {
+    foreach ($k in @((Get-ProtectSaved).Keys)) { Set-ProtectSetting $k $false }
+    Write-Log 'Protect: all Defender settings CleanIT changed are back to how they were.' 'OK'
+}
+
+# --- scans ---------------------------------------------------------------
+function Invoke-DefenderScan {
+    param([ValidateSet('Quick', 'Full', 'Custom')][string]$Type, [string]$Path)
+    $start = Get-Date
+    switch ($Type) {
+        'Quick'  { Write-Log 'Microsoft Defender quick scan started (a few minutes)...'; Start-MpScan -ScanType QuickScan -ErrorAction Stop }
+        'Full'   { Write-Log 'Microsoft Defender full scan started - this can take 1-3 hours. You can keep using the PC.'; Start-MpScan -ScanType FullScan -ErrorAction Stop }
+        'Custom' {
+            if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { throw "Not found: $Path" }
+            Write-Log "Microsoft Defender is scanning $Path ..."
+            Start-MpScan -ScanType CustomScan -ScanPath $Path -ErrorAction Stop
+        }
+    }
+    $found = @(Get-ThreatHistory | Where-Object { $_.Detected -and [datetime]$_.Detected -ge $start.AddMinutes(-1) })
+    if ($found.Count) { Write-Log "Scan finished: $($found.Count) threat(s) found - see Protect > Threats." 'WARN' }
+    else { Write-Log 'Scan finished: no threats found.' 'OK' }
+    [pscustomobject]@{ Type = $Type; Path = $Path; Found = $found; Minutes = [math]::Round(((Get-Date) - $start).TotalMinutes, 1) }
+}
+
+function Start-OfflineScan {
+    # Microsoft Defender Offline: restarts into a minimal environment and scans before Windows (and malware) loads.
+    Write-Log 'Starting Microsoft Defender Offline scan - the PC will restart in a moment and scan for about 15 minutes.' 'WARN'
+    Start-MpWDOScan -ErrorAction Stop
+}
+
+# --- threats -------------------------------------------------------------
+$script:ThreatStatus = @{ 0 = 'Unknown'; 1 = 'Detected'; 2 = 'Cleaned'; 3 = 'Quarantined'; 4 = 'Removed'; 5 = 'Allowed'; 6 = 'Blocked'
+    102 = 'Quarantine failed'; 103 = 'Removal failed'; 104 = 'Allow failed'; 105 = 'Abandoned'; 107 = 'Block failed' }
+$script:ThreatSeverity = @{ 0 = 'Unknown'; 1 = 'Low'; 2 = 'Moderate'; 4 = 'High'; 5 = 'Severe' }
+
+function Get-ThreatHistory {
+    $threats = @{}
+    foreach ($t in @(Invoke-WithTimeout 'Threat list' { Get-MpThreat | ForEach-Object {
+            [pscustomobject]@{ Id = [string]$_.ThreatID; Name = [string]$_.ThreatName; Severity = [int]$_.SeverityID; Category = [int]$_.CategoryID; Active = [bool]$_.IsActive } } } 20 @())) {
+        if ($t) { $threats[$t.Id] = $t }
+    }
+    $det = @(Invoke-WithTimeout 'Threat history' { Get-MpThreatDetection | ForEach-Object {
+            [pscustomobject]@{ Id = [string]$_.ThreatID; Detected = $(if ($_.InitialDetectionTime) { ([datetime]$_.InitialDetectionTime).ToString('s') } else { $null })
+                               Status = [int]$_.ThreatStatusID; Resources = @($_.Resources | ForEach-Object { [string]$_ }); Process = [string]$_.ProcessName } } } 20 @())
+    foreach ($d in $det) {
+        if (-not $d) { continue }
+        $t = $threats[$d.Id]
+        $name = 'Unknown threat'; $sev = 0; $active = $false
+        if ($t) { $name = $t.Name; $sev = $t.Severity; $active = $t.Active }
+        # "Trojan:Win32/Wacatac.B!ml" -> type "Trojan"
+        $kind = ($name -split '[:/]')[0]
+        $status = $script:ThreatStatus[$d.Status]; if (-not $status) { $status = "Status $($d.Status)" }
+        $files = @($d.Resources | ForEach-Object { $_ -replace '^(file|process|regkey|containerfile|webfile)_?:_?', '' })
+        $plain = switch ($d.Status) {
+            { $_ -in @(2, 3, 4, 6) } { 'Handled - Defender already ' + $status.ToLower() + ' it. Nothing to do.' }
+            5 { 'Allowed by you - Defender ignores it.' }
+            { $_ -in @(102, 103, 107, 105) } { 'Defender could not deal with it automatically - click "Remove active threats" or run a full scan.' }
+            default { 'Needs action - click "Remove active threats".' }
+        }
+        [pscustomobject]@{ Id = $d.Id; Name = $name; Kind = $kind; Severity = $script:ThreatSeverity[$sev]; Detected = $d.Detected
+                           Status = $status; Active = $active; Plain = $plain; Files = $files; Process = $d.Process; Quarantined = ($d.Status -eq 3) }
+    }
+}
+
+function Remove-ActiveThreats {
+    Write-Log 'Removing active threats with Microsoft Defender...'
+    Remove-MpThreat -ErrorAction Stop
+    Write-Log 'Defender removed the active threats.' 'OK'
+}
+
+function Restore-QuarantinedThreat {
+    param([string]$ThreatName)
+    if ($ThreatName -notmatch '^[\w:/.!\-]+$') { throw 'Invalid threat name.' }
+    $exe = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
+    $out = & $exe -Restore -Name $ThreatName 2>&1
+    if ($LASTEXITCODE -ne 0) { throw (($out | Out-String).Trim()) }
+    Write-Log "Restored from quarantine: $ThreatName" 'WARN'
+}
+
+# --- scheduled scans -------------------------------------------------------
+$script:FullScanTaskName = 'CleanIT Full Scan'
+function Get-ProtectSchedule {
+    $s = Get-Settings
+    [pscustomobject]@{ WeeklyQuick = [bool]$s.ScanWithClean; MonthlyFull = [bool](Get-ScheduledTask -TaskName $script:FullScanTaskName -ErrorAction SilentlyContinue) }
+}
+function Set-ProtectSchedule {
+    param([bool]$WeeklyQuick, [bool]$MonthlyFull, [string]$SourceDir)
+    $s = Get-Settings
+    $s.ScanWithClean = $WeeklyQuick
+    Save-Settings $s
+    if (Test-Schedule) { Install-Schedule $SourceDir }   # re-register the weekly task with/without -QuickScan
+    elseif ($WeeklyQuick) { Write-Log 'Turn on the weekly clean (Settings) so the weekly quick scan can run with it.' 'WARN' }
+    if ($MonthlyFull) {
+        $dest = Copy-AppFiles $SourceDir
+        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$dest`" -FullScan -Silent -Scheduled"
+        $at = [datetime]::ParseExact([string]$s.ScheduleTime, 'HH:mm', $null).AddHours(1)
+        $trigger = New-ScheduledTaskTrigger -Weekly -WeeksInterval 4 -DaysOfWeek $s.ScheduleDay -At $at
+        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        $set = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 6) -AllowStartIfOnBatteries
+        Register-ScheduledTask -TaskName $script:FullScanTaskName -Action $action -Trigger $trigger -Principal $principal -Settings $set `
+            -Description 'CleanIT: Microsoft Defender full scan every 4 weeks.' -Force | Out-Null
+        Write-Log "Full scan scheduled every 4 weeks ($($s.ScheduleDay)s $($at.ToString('HH:mm')))." 'OK'
+    }
+    else { Unregister-ScheduledTask -TaskName $script:FullScanTaskName -Confirm:$false -ErrorAction SilentlyContinue }
+}
+
+# --- Windows Sandbox ------------------------------------------------------
+function Get-SandboxStatus {
+    $os = Get-CimInstance Win32_OperatingSystem
+    $edition = [string]$os.Caption
+    $supported = $edition -notmatch 'Home'
+    $state = 'Unknown'
+    if ($supported) {
+        $f = Invoke-WithTimeout 'Sandbox feature' { Get-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM } 30
+        if ($f) { $state = [string]$f.State }
+    }
+    $cs = Get-CimInstance Win32_ComputerSystem
+    $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+    $virt = [bool]$cs.HypervisorPresent -or [bool]$cpu.VirtualizationFirmwareEnabled
+    $vbox = [bool](Get-ItemProperty 'HKLM:\SOFTWARE\Oracle\VirtualBox' -ErrorAction SilentlyContinue)
+    [pscustomobject]@{ Supported = $supported; Edition = $edition; State = $state; Enabled = ($state -eq 'Enabled'); VirtualizationOn = $virt; VirtualBox = $vbox }
+}
+
+function Enable-Sandbox {
+    Write-Log 'Turning on Windows Sandbox (Windows feature)...'
+    $r = Enable-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM -All -NoRestart -ErrorAction Stop
+    Write-Log 'Windows Sandbox is turned on. Restart the PC to finish.' 'OK'
+    [bool]$r.RestartNeeded
+}
+
+# Writes a Sandbox config that shows Downloads read-only inside the sandbox, with no access to your real files.
+function New-SandboxConfig {
+    $dl = Get-DownloadsFolder
+    $wsb = Join-Path $env:TEMP 'CleanIT-TestDownloads.wsb'
+    $xml = @"
+<Configuration>
+  <Networking>Enable</Networking>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>$([Security.SecurityElement]::Escape($dl))</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\Downloads (read-only)</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>explorer.exe "C:\Users\WDAGUtilityAccount\Desktop\Downloads (read-only)"</Command>
+  </LogonCommand>
+</Configuration>
+"@
+    [IO.File]::WriteAllText($wsb, $xml, (New-Object Text.UTF8Encoding($false)))
+    $wsb
+}
+
+# --- network check -----------------------------------------------------------
+$script:RiskyPorts = @{
+    21 = 'FTP file server (unencrypted)'; 22 = 'SSH remote login'; 23 = 'Telnet remote login (unencrypted - risky)'; 3389 = 'Remote Desktop'
+    5900 = 'VNC remote control'; 5901 = 'VNC remote control'; 5938 = 'TeamViewer'; 7070 = 'AnyDesk'; 1433 = 'Microsoft SQL Server'; 3306 = 'MySQL database'
+    5432 = 'PostgreSQL database'; 6379 = 'Redis database'; 27017 = 'MongoDB database'; 9200 = 'Elasticsearch'; 8080 = 'Web server'; 80 = 'Web server'; 443 = 'Web server'
+}
+
+function Get-NetworkCheck {
+    $out = New-Object System.Collections.Generic.List[object]
+    # Connection type + Wi-Fi security
+    $profiles = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue)
+    $wifi = (& netsh.exe wlan show interfaces 2>$null) -join "`n"
+    $ssid = ([regex]::Match($wifi, '(?m)^\s*SSID\s*:\s*(.+)$')).Groups[1].Value.Trim()
+    $auth = ([regex]::Match($wifi, '(?m)^\s*Authentication\s*:\s*(.+)$')).Groups[1].Value.Trim()
+    if ($ssid) {
+        $lvl = 'OK'; $txt = "Connected to Wi-Fi ""$ssid"" with $auth security."
+        if ($auth -match '(?i)open|none') { $lvl = 'BAD'; $txt = "Wi-Fi ""$ssid"" has NO password/encryption - others nearby can see your traffic. Avoid logging in to anything important on it." }
+        elseif ($auth -match '(?i)WEP|TKIP|WPA-Personal$|^WPA$') { $lvl = 'WARN'; $txt = "Wi-Fi ""$ssid"" uses old security ($auth). Switch your router to WPA2 or WPA3." }
+        $out.Add([pscustomobject]@{ Area = 'Wi-Fi'; Level = $lvl; Text = $txt })
+    }
+    foreach ($p in $profiles) {
+        $cat = [string]$p.NetworkCategory
+        $txt = "Network ""$($p.Name)"" is set to $cat."
+        $lvl = 'OK'
+        if ($cat -eq 'Private') { $txt += ' Fine at home. On public Wi-Fi (cafe, hotel) set it to Public so other people can''t see your PC.' }
+        elseif ($cat -eq 'Public') { $txt += ' Your PC is hidden from other devices on this network - the safe choice.' }
+        $out.Add([pscustomobject]@{ Area = 'Network type'; Level = $lvl; Text = $txt })
+    }
+    # Things listening for connections from other devices
+    $listen = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalAddress -notmatch '^(127\.|::1$)' })
+    $procNames = @{}
+    foreach ($p in Get-Process -ErrorAction SilentlyContinue) { $procNames[$p.Id] = $p.ProcessName }
+    $flagged = @{}
+    foreach ($l in $listen) {
+        $port = [int]$l.LocalPort
+        if (-not $script:RiskyPorts.ContainsKey($port) -or $flagged.ContainsKey($port)) { continue }
+        $flagged[$port] = $true
+        $proc = $procNames[[int]$l.OwningProcess]
+        $lvl = 'INFO'; if ($port -in @(23, 21)) { $lvl = 'WARN' }
+        $out.Add([pscustomobject]@{ Area = 'Open to the network'; Level = $lvl
+            Text = "Port $port - $($script:RiskyPorts[$port]) ($proc) accepts connections from other devices. Fine if you set this up on purpose; otherwise close that program or turn the feature off." })
+    }
+    if (-not $flagged.Count) { $out.Add([pscustomobject]@{ Area = 'Open to the network'; Level = 'OK'; Text = 'No remote-access or server programs are listening for connections from other devices.' }) }
+    # Devices on the local network (from the PC's address cache - no scanning of other devices)
+    $gw = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1 | ForEach-Object { $_.NextHop })[0]
+    $devices = @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+            $_.State -in @('Reachable', 'Stale', 'Delay', 'Probe') -and $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-00-00-00-00-00|FF-FF-FF-FF-FF-FF|01-00-5E)' -and $_.IPAddress -notmatch '^(224|239|255)\.'
+        } | Sort-Object { [version]$_.IPAddress } -Unique | ForEach-Object {
+            $name = ''
+            try { $ar = [Net.Dns]::BeginGetHostEntry($_.IPAddress, $null, $null); if ($ar.AsyncWaitHandle.WaitOne(400)) { $name = [Net.Dns]::EndGetHostEntry($ar).HostName } } catch {}
+            [pscustomobject]@{ IP = [string]$_.IPAddress; MAC = [string]$_.LinkLayerAddress; Name = $name; Router = ($_.IPAddress -eq $gw) }
+        })
+    [pscustomobject]@{ Checks = $out.ToArray(); Devices = $devices; Router = $gw }
 }
 
 function Get-SecurityChecks {
@@ -2684,6 +3031,70 @@ function Get-StabilitySummary {
     } 30 $empty
 }
 
+# Unexpected shutdowns explained. Kernel-Power 41 = Windows started after it was not shut down properly; its
+# BugcheckCode is non-zero when it was a blue screen. Event 6008 (logged at the same boot) says when power was lost.
+# WHEA-Logger = hardware errors (CPU/RAM/PCIe), which point at PSU, heat or unstable overclocks.
+function Get-ShutdownHistory {
+    $seen = $null
+    $s = Get-Settings
+    if ($s.ShutdownsSeenUntil) { try { $seen = [datetime]::Parse([string]$s.ShutdownsSeenUntil, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToLocalTime() } catch { } }
+    $raw = Invoke-WithTimeout 'Shutdown history (event log)' {
+        $since = (Get-Date).AddDays(-30)
+        $k41 = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Kernel-Power'; Id = 41; StartTime = $since } -ErrorAction SilentlyContinue)
+        $e6008 = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 6008; StartTime = $since } -ErrorAction SilentlyContinue)
+        $whea = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WHEA-Logger'; StartTime = $since } -ErrorAction SilentlyContinue).Count
+        $items = foreach ($e in $k41) {
+            $x = [xml]$e.ToXml(); $d = @{}
+            foreach ($n in $x.Event.EventData.Data) { $d[[string]$n.Name] = [string]$n.'#text' }
+            # 6008 holds the time power was lost; property 7 is a binary SYSTEMTIME (local time) - no locale parsing
+            $lost = $null
+            $created = $e.TimeCreated
+            $m = $e6008 | Where-Object { [math]::Abs(($_.TimeCreated - $created).TotalMinutes) -lt 5 } | Select-Object -First 1
+            if ($m -and $m.Properties.Count -ge 8) {
+                $b = $m.Properties[7].Value
+                if ($b -is [byte[]] -and $b.Length -ge 16) {
+                    $w = { param($i) [int]$b[$i] + 256 * [int]$b[$i + 1] }
+                    try { $lost = New-Object datetime ((& $w 0), (& $w 2), (& $w 6), (& $w 8), (& $w 10), (& $w 12)) } catch { $lost = $null }
+                }
+            }
+            [pscustomobject]@{
+                Restarted = $e.TimeCreated; Lost = $lost
+                Crash = ([string]$d['BugcheckCode'] -ne '' -and [string]$d['BugcheckCode'] -ne '0')
+                Button = ([string]$d['PowerButtonTimestamp'] -ne '' -and [string]$d['PowerButtonTimestamp'] -ne '0')
+                Sleeping = ([string]$d['SleepInProgress'] -ne '' -and [string]$d['SleepInProgress'] -ne '0')
+            }
+        }
+        [pscustomobject]@{ Items = @($items); Whea = $whea }
+    } 30 $null
+    if (-not $raw) { return [pscustomobject]@{ Events = @(); New = 0; HardwareErrors = 0; Verdict = 'Could not read the Windows event log.'; Advice = @() } }
+
+    $events = @($raw.Items | Sort-Object Restarted -Descending | ForEach-Object {
+        $when = $(if ($_.Lost) { $_.Lost } else { $_.Restarted })
+        $what = $(if ($_.Crash) { 'Blue screen (Windows crashed)' } elseif ($_.Sleeping) { 'Lost power while asleep' } elseif ($_.Button) { 'Power button held down' } else { 'Power cut while Windows was running' })
+        [pscustomobject]@{ When = $when.ToString('o'); Back = $_.Restarted.ToString('o'); What = $what; Crash = $_.Crash; New = (-not $seen -or $_.Restarted -gt $seen) }
+    })
+    $crashes = @($events | Where-Object Crash).Count
+    $advice = @()
+    if (-not $events.Count) { $verdict = 'No unexpected shutdowns in the last 30 days.' }
+    elseif ($crashes) {
+        $verdict = "$crashes of these were blue screens - Windows crashed."
+        $advice = @('Update the graphics and chipset drivers (Drivers page) and run Repair Windows (above).',
+                    'If it keeps happening, undo any overclock (CPU, RAM/XMP, GPU) and check temperatures.')
+    }
+    elseif ($raw.Whea -gt 0) {
+        $verdict = "Windows also logged $($raw.Whea) hardware error(s) in the same period - the PC may be switching off by itself."
+        $advice = @('Common causes: an unstable overclock or XMP/EXPO memory profile, overheating, or a weak/failing power supply.',
+                    'Try the BIOS defaults for CPU/RAM speed, clean dust from the fans, and check temperatures under load.')
+    }
+    else {
+        $verdict = 'Windows did not crash. Each time, the power was simply cut while Windows was running - no error and no overheating warning was logged first.'
+        $advice = @('This almost always means the PC was turned off by holding the power button, by switching off the wall socket, power strip or the switch on the back, or by a power cut.',
+                    'If that was you: use Start > Power > Shut down instead (or press the power button once, briefly). Cutting the power can damage files and half-installed Windows updates.',
+                    'If the PC switched off on its own while you were using it, that points to the power supply or overheating rather than anything in Windows.')
+    }
+    [pscustomobject]@{ Events = $events; New = @($events | Where-Object New).Count; HardwareErrors = [int]$raw.Whea; Verdict = $verdict; Advice = $advice }
+}
+
 # Physical disks with health as plain text. Converted inside the worker runspace: the Storage module's
 # friendly names (Healthy, SSD...) do not survive the trip between runspaces - raw codes (0, 4) arrive instead.
 function Get-DiskHealthInfo {
@@ -2783,7 +3194,7 @@ function Get-HealthReport {
     $L.Add(('  Unexpected shutdowns: {0}   Blue screens: {1}   App crashes: {2}' -f $st.Unexpected, $st.BlueScreens, $st.AppCrashes))
     if ($st.TopCrashers.Count) { $L.Add('  Most crashes: ' + ($st.TopCrashers -join ', ')) }
     if ($st.BlueScreens -gt 0) { $L.Add('  ! Blue screens happened - check drivers (GPU, chipset) and run Repair Windows.') }
-    if ($st.Unexpected -ge 3) { $L.Add('  ! Several unexpected shutdowns (power loss, hard reset, freezes or PSU/overheating). If you did not cut power yourself, check temperatures and power supply.') }
+    if ($st.Unexpected -ge 3) { $L.Add('  ! Several unexpected shutdowns - "Unexpected shutdowns" above explains what happened.') }
 
     $L.Add(''); $L.Add('TOP MEMORY USERS')
     Get-Process | Group-Object ProcessName | ForEach-Object {
@@ -2837,9 +3248,16 @@ function Get-DashboardData {
         if ([double]$drv.OldPackageBytes -gt 200MB) { & $add 0 'INFO' ("{0} of old driver packages can be removed" -f (Format-Size $drv.OldPackageBytes)) 'Drivers' }
     }
     else { & $add 2 'INFO' 'Drivers not checked yet' 'Drivers' }
+    $mpPref = Invoke-WithTimeout 'Defender settings' { Get-MpPreference } 15
+    $mpOn = (Get-DefenderActive).Active
+    if ($mpOn -and $mpPref -and ([int]$mpPref.PUAProtection -ne 1 -or [int]$mpPref.EnableNetworkProtection -ne 1)) {
+        & $add 2 'INFO' 'Extra Microsoft Defender protection is available (blocking unwanted apps and scam websites)' 'Protect'
+    }
+
     $stab = Get-StabilitySummary
     if ($stab.BlueScreens -gt 0) { & $add 15 'BAD' "$($stab.BlueScreens) blue screen(s) in the last 30 days - see the Health tab" 'Health' }
-    if ($stab.Unexpected -ge 3) { & $add 5 'WARN' "$($stab.Unexpected) unexpected shutdowns in the last 30 days (power loss, freezes or hard resets)" 'Health' }
+    $sh = Get-ShutdownHistory
+    if ($sh.New -ge 2) { & $add 5 'WARN' "$($sh.New) unexpected shutdowns in the last 30 days - see what happened" 'Health' }
 
     $startup = @(Get-StartupItems -Quick | Where-Object { $_.Enabled }).Count
     if ($startup -gt 10) { & $add 10 'WARN' "$startup apps launch at sign-in - slows startup" 'Startup' }
@@ -3320,6 +3738,7 @@ function Install-Schedule {
     $s = Get-Settings
     $dest = Copy-AppFiles $SourceDir
     $extra = ''; if ($s.ScheduleUpdates) { $extra = ' -Updates' }
+    if ($s.ScanWithClean) { $extra += ' -QuickScan' }
     $at = [datetime]::ParseExact([string]$s.ScheduleTime, 'HH:mm', $null)
     $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
                    -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$dest`" -Clean -Silent -NoRestorePoint -Scheduled$extra"
@@ -3434,6 +3853,7 @@ function Install-CleanITApp {
 
 function Uninstall-CleanITApp {
     Remove-Schedule
+    Unregister-ScheduledTask -TaskName 'CleanIT Full Scan' -Confirm:$false -ErrorAction SilentlyContinue
     foreach ($t in @((Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\CleanIT.lnk'),
                      (Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'CleanIT.lnk'))) {
         Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue

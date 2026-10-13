@@ -37,6 +37,7 @@ const ICONS = {
   updates: 'M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5',
   privacy: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6zM9 12l2 2 4-4',
   security: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z',
+  protect: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6zM12 8v8M8 12h8',
   health: 'M3 12h4l2-5 4 10 2-5h6',
   fleet: 'M3 5h8v6H3zM13 5h8v6h-8zM8 15h8v6H8zM7 11v2h10v-2M12 13v2',
   settings: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
@@ -128,7 +129,7 @@ const S = { page: 'dashboard', state: null, busy: {}, failed: {}, cache: {}, sel
 const pages = {};
 const NAV = [
   ['dashboard', 'Dashboard', 'home'], ['clean', 'Clean', 'clean'], ['disk', 'Disk', 'disk'], ['startup', 'Startup', 'startup'],
-  ['apps', 'Apps', 'apps'], ['drivers', 'Drivers', 'chip'], ['updates', 'Updates', 'updates'], ['privacy', 'Privacy', 'privacy'], ['security', 'Security', 'security'],
+  ['apps', 'Apps', 'apps'], ['drivers', 'Drivers', 'chip'], ['updates', 'Updates', 'updates'], ['privacy', 'Privacy', 'privacy'], ['security', 'Security', 'security'], ['protect', 'Protect', 'protect'],
   ['health', 'Health', 'health'], ['fleet', 'Fleet', 'fleet'], ['settings', 'Settings', 'settings']
 ];
 
@@ -146,10 +147,19 @@ function render() {
   const root = h('div');
   const up = S.state.update;
   if (up && up.Available && !S.updateDismissed) root.append(updateBanner(up));
+  const av = (S.state.antivirus || []).filter(a => a.Enabled);
+  if (av.length && !S.state.settings.AvNoticeHidden) root.append(avBanner(av));
   try { p.render(root); } catch (e) { root.append(h('div', { class: 'notice warn', text: 'Something went wrong: ' + e.message })); console.error(e); }
-  const scroll = $('#page').scrollTop;
-  $('#page').replaceChildren(root);
-  $('#page').scrollTop = scroll;
+  keepScroll($('#page'), () => $('#page').replaceChildren(root));
+}
+// Re-rendering replaces the page; keep the page's scroll position AND each scrolling list's position
+// (lists scroll inside their own box, which used to jump back to the top on every tick/untick).
+function keepScroll(container, swap) {
+  const pageTop = container.scrollTop, inner = {};
+  container.querySelectorAll('[data-sk]').forEach(e => { inner[e.dataset.sk] = e.scrollTop; });
+  swap();
+  container.querySelectorAll('[data-sk]').forEach(e => { if (inner[e.dataset.sk]) e.scrollTop = inner[e.dataset.sk]; });
+  container.scrollTop = pageTop;
 }
 // Wraps an async action: marks it busy (spinner, buttons disabled), re-renders, reports errors.
 async function task(key, fn) {
@@ -275,7 +285,7 @@ function table(opts) {
     body.append(tr);
   }
   if (!rows.length) body.append(h('tr', {}, h('td', { colspan: columns.length + (sel ? 1 : 0), class: 'empty', text: empty || 'Nothing here yet.' })));
-  return h('div', { class: 'table-wrap', style: opts.height ? 'max-height:' + opts.height : null }, h('table', {}, h('thead', {}, head), body));
+  return h('div', { class: 'table-wrap', 'data-sk': opts.id || null, style: opts.height ? 'max-height:' + opts.height : null }, h('table', {}, h('thead', {}, head), body));
 }
 
 // Score ring (SVG)
@@ -405,9 +415,17 @@ async function cleanKeys(keys) {
   const rp = await restorePointChoice(); if (rp === null) return;
   await task('clean', async () => {
     const r = await run('clean', { keys, restorePoint: rp }, prog('clean'));
-    for (const d of r.Details) if (S.cache.sizes && S.cache.sizes[d.Key]) S.cache.sizes[d.Key].size = 0;
-    S.cache.junk = 0;
-    toast('Done - freed ' + fmtSize(r.Freed) + '.');
+    // what's left is what open apps were using - show that instead of pretending it's all gone
+    for (const d of r.Details) if (S.cache.sizes && S.cache.sizes[d.Key]) S.cache.sizes[d.Key].size = d.Skipped || 0;
+    S.cache.junk = r.Skipped || 0;
+    const busy = [...new Set((r.BusyApps || []).map(appName))].join(', ');
+    if (r.Skipped >= 1048576) {
+      dialog('Freed ' + fmtSize(r.Freed), [
+        h('p', { text: fmtSize(r.Skipped) + ' could not be removed because ' + (busy ? 'these apps were using those files: ' + busy + '.' : 'Windows or another program was using those files.') }),
+        h('p', { class: 'muted', text: busy ? 'Close ' + busy + ' (check the system tray by the clock too) and click Clean again to get the rest. Nothing is wrong - open apps simply lock their own cache files.'
+          : 'This is normal - some temporary files stay locked until the program using them closes or the PC restarts.' })
+      ], [{ id: 'x', text: 'OK', cls: 'primary' }]);
+    } else toast('Done - freed ' + fmtSize(r.Freed) + '.');
     loadDashboard();
   });
 }
@@ -820,7 +838,7 @@ async function findLeftovers(p) {
 async function leftoversDialog(name, hits) {
   S.sel.left = new Set();
   const wrap = h('div');
-  const draw = () => wrap.replaceChildren(
+  const draw = () => keepScroll(wrap, () => wrap.replaceChildren(
     h('p', { class: 'muted', text: 'Nothing is ticked - check each one. Folders go to the Recycle Bin; registry keys are backed up to a .reg file first. If the program is still installed, these are its live files - leave them.' }),
     table({ id: 'left', rows: hits, selKey: 'left', rowKey: x => x.Path, onSel: draw, height: '50vh',
       columns: [
@@ -828,7 +846,7 @@ async function leftoversDialog(name, hits) {
         { key: 'Path', label: 'Path', cls: 'wrap' },
         { key: 'Size', label: 'Size', cls: 'num', render: x => x.Type === 'Folder' ? fmtSize(x.Size) : '' },
         { key: 'Reason', label: 'Why', cls: 'muted small' }
-      ] }));
+      ] })));
   draw();
   const c = await dialog('Leftovers of ' + name, wrap, [{ id: 'x', text: 'Close' }, { id: 'rm', text: 'Remove ticked', cls: 'danger' }], true);
   if (c !== 'rm' || !S.sel.left.size) return;
@@ -1021,8 +1039,12 @@ pages.updates = {
   }
 };
 function updApps(root) {
-  const items = S.cache.winget;
-  if (!items && S.state.winget) autoLoad('winget', loadWinget);
+  const all = S.cache.winget;
+  if (!all && S.state.winget) autoLoad('winget', loadWinget);
+  // apps that don't report their version (e.g. Roblox) always look outdated - list them separately
+  const isUnknown = u => u.UnknownVersion || u.Version === 'Unknown';
+  const items = all ? all.filter(u => !isUnknown(u)) : null;
+  const unknown = all ? all.filter(isUnknown) : [];
   const excl = new Set(S.state.settings.WingetExclude || []);
   const sel = S.sel.winget = S.sel.winget || new Set();
   const rec = (items || []).filter(u => u.Importance === 'Recommended' && !excl.has(u.Id)).length;
@@ -1043,7 +1065,7 @@ function updApps(root) {
     h('p', { class: 'muted small', text: '"Never update" apps are skipped here, by the weekly task and by -Updates.' }),
     progLine('wingetUpdate')));
   if (!items) { root.append(h('div', { class: 'empty', text: S.busy.winget ? 'Checking for app updates...' : 'Click Check again.' })); return; }
-  root.append(table({ id: 'winget', rows: items.slice().sort((a, b) => IMP_ORDER[a.Importance] - IMP_ORDER[b.Importance] || a.Name.localeCompare(b.Name)),
+  if (items.length) root.append(table({ id: 'winget', rows: items.slice().sort((a, b) => IMP_ORDER[a.Importance] - IMP_ORDER[b.Importance] || a.Name.localeCompare(b.Name)),
     selKey: 'winget', rowKey: u => u.Id, empty: 'All apps are up to date.', height: 'calc(100vh - 380px)', rowClass: u => excl.has(u.Id) ? 'muted' : '',
     columns: [
       { key: 'Importance', label: 'Advice', sort: u => IMP_ORDER[u.Importance], render: u => excl.has(u.Id) ? h('span', { class: 'pill INFO', text: 'Never update' }) : impPill(u.Importance) },
@@ -1055,13 +1077,19 @@ function updApps(root) {
           await saveSettings({ WingetExclude: [...excl] }); render();
         }, 'link') }
     ] }));
+  if (unknown.length) root.append(h('details', { class: 'card unknown-apps' },
+    h('summary', { text: 'Apps winget can\'t check (' + unknown.length + ')' }),
+    h('p', { class: 'muted small', text: 'These apps don\'t tell Windows which version is installed, so winget always lists them as "update available" - even right after updating. Most of them (like Roblox) update themselves when you open them, so you can ignore this list.' }),
+    unknown.map(u => h('div', { class: 'opt' },
+      h('div', { class: 't' }, h('b', { text: u.Name }), h('div', { class: 'small muted', text: 'Latest version: ' + u.Available })),
+      btn('Update anyway', () => task('wingetUpdate', async () => { await run('wingetUpdate', { ids: [u.Id] }, prog('wingetUpdate')); toast(u.Name + ' updated.'); }), 'link', 'wingetUpdate')))));
 }
 function loadWinget() {
   return task('winget', async () => {
     S.cache.winget = (await run('wingetList')).items;
     const excl = new Set(S.state.settings.WingetExclude || []);
     // pre-tick only the updates that matter
-    S.sel.winget = new Set(S.cache.winget.filter(u => !excl.has(u.Id) && u.Importance === 'Recommended').map(u => u.Id));
+    S.sel.winget = new Set(S.cache.winget.filter(u => !excl.has(u.Id) && u.Importance === 'Recommended' && !(u.UnknownVersion || u.Version === 'Unknown')).map(u => u.Id));
   });
 }
 function updWindows(root, type) {
@@ -1177,6 +1205,162 @@ async function secFix(fix) {
   loadSecurity();
 }
 
+// ----- Protect (Avast-style control panel on top of Microsoft Defender)
+pages.protect = {
+  title: 'Protect',
+  render(root) {
+    const st = S.cache.protect;
+    if (!st) autoLoad('protect', loadProtect);
+    if (!S.cache.threats) autoLoad('threats', loadThreats);
+    if (!S.cache.sandbox) autoLoad('sandbox', loadSandbox);
+    if (!st) { root.append(h('div', { class: 'empty', text: 'Checking Microsoft Defender...' })); return; }
+
+    // 1) Status + scans
+    const ok = st.DefenderActive && st.RealTime;
+    const headline = !st.DefenderActive ? (st.OtherAntivirus.length ? st.OtherAntivirus.join(', ') + ' is your antivirus' : 'Microsoft Defender is not active')
+      : !st.RealTime ? 'Real-time protection is OFF' : 'You\'re protected by Microsoft Defender';
+    root.append(h('div', { class: 'card protect-hero' },
+      h('div', { class: 'shield ' + (ok ? 'ok' : 'bad') }, icon('protect')),
+      h('div', { style: 'flex:1' },
+        h('h2', { style: 'margin:0 0 4px', text: headline }),
+        h('div', { class: 'muted', text: (st.DefenderActive ? 'Real-time protection ' + (st.RealTime ? 'on' : 'OFF') + '  -  tamper protection ' + (st.Tamper ? 'on' : 'off') + '  -  ' : '') +
+          'virus definitions ' + (st.SignatureAge === 0 ? 'up to date' : st.SignatureAge + ' day(s) old') +
+          '  -  last quick scan ' + fmtAgo(st.LastQuick) + '  -  last full scan ' + (st.LastFull ? fmtAgo(st.LastFull) : 'never') }),
+        !st.DefenderActive && st.OtherAntivirus.length ? h('div', { class: 'notice warn', style: 'margin-top:10px', text: 'Microsoft Defender steps aside while another antivirus is active, so the controls below only take effect if you remove ' + st.OtherAntivirus.join(', ') + '. Its own app is where you control it.' }) : null,
+        !st.RealTime && st.DefenderActive ? h('div', { class: 'notice warn', style: 'margin-top:10px' }, 'Turn real-time protection back on in Windows Security. ', btn('Open Windows Security', () => openThing('url', { url: 'windowsdefender:' }), 'link')) : null,
+        h('div', { class: 'row', style: 'margin-top:12px' },
+          btn('Quick scan', () => defScan('Quick'), 'primary', 'scan_Quick', !st.DefenderActive),
+          btn('Full scan', () => defScan('Full'), '', 'scan_Full', !st.DefenderActive),
+          btn('Scan Downloads', () => defScan('Downloads'), '', 'scan_Downloads', !st.DefenderActive),
+          btn('Scan a folder...', scanFolder, '', 'scan_Custom', !st.DefenderActive),
+          btn('Offline scan...', offlineScan, 'link', 'offline', !st.DefenderActive),
+          btn('Update definitions', () => task('sig', async () => { await run('securityFix', { fix: 'UpdateSignatures' }); await loadProtect(); toast('Virus definitions updated.'); }), 'link', 'sig', !st.DefenderActive)),
+        ['Quick', 'Full', 'Downloads', 'Custom'].map(t => progLine('scan_' + t)))));
+
+    // 2) Extra protection switches
+    const ch = S.cache.protectChanges = S.cache.protectChanges || {};
+    const n = Object.keys(ch).length;
+    const isOn = s => s.Key in ch ? ch[s.Key] : s.State === 'On';
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Extra protection', h('small', { text: 'Defender features that are off by default' })),
+      st.Settings.map(s => h('div', { class: 'opt' },
+        toggle(isOn(s), v => { if (v === (s.State === 'On')) delete ch[s.Key]; else ch[s.Key] = v; render(); }, !st.DefenderActive),
+        h('div', { class: 't' }, h('b', { text: s.Name }), h('div', { text: s.Description }),
+          s.Warning ? h('div', { class: 'small c-WARN', text: s.Warning }) : null),
+        s.Recommended ? h('span', { class: 'pill accent', text: 'recommended' }) : null,
+        h('span', { class: 'pill ' + (s.State === 'On' ? 'OK' : s.State === 'Audit' ? 'WARN' : 'INFO'), text: s.State === 'Audit' ? 'log only' : s.State.toLowerCase() }))),
+      h('div', { class: 'row', style: 'margin-top:10px' },
+        btn(n ? 'Apply ' + n + ' change' + (n > 1 ? 's' : '') : 'Apply', applyProtect, 'primary', 'protectSet', !n || !st.DefenderActive),
+        btn('Turn on recommended', () => { st.Settings.filter(s => s.Recommended && s.State !== 'On').forEach(s => { ch[s.Key] = true; }); render(); }, '', null, !st.DefenderActive),
+        h('span', { class: 'spacer' }),
+        st.Settings.some(s => s.ChangedByCleanIT) ? btn('Put back original settings', async () => {
+          if (!await confirmBox('Put Defender back how it was?', 'Every Defender setting CleanIT changed goes back to its original value.', 'Put back')) return;
+          await task('protectSet', async () => { S.cache.protect = await run('protectRestore'); S.cache.protectChanges = {}; });
+        }, 'link', 'protectSet') : null)));
+
+    // 3) Threats
+    const th = S.cache.threats || [];
+    const active = th.filter(t => t.Active);
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Threats', h('small', { text: th.length ? th.length + ' found on this PC (history)' : '' })),
+      !S.cache.threats ? h('div', { class: 'muted', text: 'Reading threat history...' }) :
+      !th.length ? h('div', { class: 'c-OK', text: 'No threats have been found on this PC.' }) : [
+        active.length ? h('div', { class: 'notice warn' }, h('b', { text: active.length + ' threat(s) still need action. ' }),
+          btn('Remove active threats', async () => {
+            if (!await confirmBox('Remove active threats?', 'Microsoft Defender removes or quarantines everything it still flags as active.', 'Remove', true)) return;
+            await task('threatsRm', async () => { await run('threatsRemove'); await loadThreats(); toast('Threats removed.'); });
+          }, 'danger', 'threatsRm')) : null,
+        th.map(t => h('div', { class: 'opt' },
+          h('span', { class: 'pill ' + (t.Severity === 'Severe' || t.Severity === 'High' ? 'BAD' : t.Severity === 'Moderate' ? 'WARN' : 'INFO'), text: t.Severity || 'Unknown' }),
+          h('div', { class: 't' }, h('b', { text: t.Name }),
+            h('div', { text: (t.Detected ? fmtAgo(t.Detected) + '  -  ' : '') + t.Plain }),
+            t.Files.length ? h('div', { class: 'small muted', text: t.Files.slice(0, 3).join('; ') + (t.Files.length > 3 ? ' ...' : '') }) : null),
+          t.Quarantined ? btn('Restore...', () => restoreThreat(t), 'link', 'restore') : null))]));
+
+    // 4) Scheduled scans
+    const sc = S.cache.protectSched = S.cache.protectSched || { weeklyQuick: st.Schedule.WeeklyQuick, monthlyFull: st.Schedule.MonthlyFull };
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Scheduled scans', h('small', { text: 'Defender also runs its own quick scans in the background' })),
+      h('div', { class: 'opt' }, toggle(sc.weeklyQuick, v => { sc.weeklyQuick = v; render(); }),
+        h('div', { class: 't' }, h('b', { text: 'Quick scan with the weekly clean' }), h('div', { text: 'Runs right after the weekly automatic clean (turn that on in Settings).' }))),
+      h('div', { class: 'opt' }, toggle(sc.monthlyFull, v => { sc.monthlyFull = v; render(); }),
+        h('div', { class: 't' }, h('b', { text: 'Full scan every 4 weeks' }), h('div', { text: 'Checks every file on every drive. Runs an hour after the weekly clean time and can take a while; the PC stays usable.' }))),
+      h('div', { class: 'row end' }, btn('Save', () => task('psched', async () => { const r = await run('protectSchedule', sc); st.Schedule = r; toast('Scan schedule saved.'); }), 'primary', 'psched'))));
+
+    // 5) Windows Sandbox
+    const sb = S.cache.sandbox;
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Windows Sandbox', h('small', { text: 'a throwaway Windows to test suspicious downloads' })),
+      !sb ? h('div', { class: 'muted', text: 'Checking...' }) :
+      !sb.Supported ? h('div', { class: 'muted', text: 'Windows Sandbox needs Windows 10/11 Pro or Enterprise - this PC has ' + sb.Edition + '.' }) : [
+        h('p', { class: 'muted small', text: 'Opens a clean, separate copy of Windows. Your Downloads folder shows up inside it read-only - run a suspicious file there, and when you close the Sandbox everything in it is erased. Nothing can reach your real files.' }),
+        !sb.VirtualizationOn ? h('div', { class: 'notice warn' }, h('b', { text: 'Virtualization is turned off in your BIOS. ' }),
+          'Windows Sandbox needs it' + (sb.VirtualBox ? ' - and so do your VirtualBox virtual machines, which will not start without it' : '') +
+          '. Restart, press Del, and turn on "SVM Mode" (AMD, often under Tweaker > Advanced CPU Settings) or "Intel Virtualization Technology", then save with F10. A BIOS update resets this.') : null,
+        sb.Enabled ? h('div', { class: 'row' }, btn('Test a download safely', () => task('sbOpen', async () => { await run('sandboxOpen'); toast('Windows Sandbox is opening - it takes a few seconds.'); }), 'primary', 'sbOpen'))
+        : h('div', { class: 'row' }, h('span', { class: 'muted', text: 'Windows Sandbox is ' + (sb.State === 'Unknown' ? 'not checked (needs admin)' : 'turned off') + '.' }),
+            btn('Turn on Windows Sandbox', enableSandbox, 'primary', 'sbEnable', !sb.VirtualizationOn || sb.State === 'Unknown'))]));
+
+    // 6) Network check
+    const net = S.cache.network;
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Network check', h('small', { text: 'your Wi-Fi, network settings and what is connected' })),
+      h('div', { class: 'row' }, btn(net ? 'Check again' : 'Check my network', () => task('net', async () => { S.cache.network = await run('networkCheck', {}, prog('net')); }), 'primary', 'net')),
+      progLine('net'),
+      net ? [
+        net.Checks.map(c => h('div', { class: 'opt' }, h('span', { class: 'pill ' + c.Level, text: c.Area }), h('div', { class: 't', text: c.Text }))),
+        h('p', { style: 'margin:14px 0 6px', text: net.Devices.length + ' devices seen on your network recently. If you don\'t recognise something, check your router\'s device list (open ' + (net.Router || 'your router') + ' in a browser).' }),
+        table({ id: 'netdev', rows: net.Devices, rowKey: d => d.IP, height: '300px',
+          columns: [
+            { key: 'IP', label: 'Address', sort: d => d.IP.split('.').map(x => x.padStart(3, '0')).join('.') },
+            { key: 'Name', label: 'Name', render: d => d.Router ? h('b', { text: 'Your router' }) : (d.Name || h('span', { class: 'muted', text: 'unknown name' })) },
+            { key: 'MAC', label: 'Hardware address', cls: 'muted' }
+          ] })] : null));
+  }
+};
+function loadProtect() { return task('protect', async () => { S.cache.protect = await run('protectStatus'); S.cache.protectChanges = {}; }); }
+function loadThreats() { return task('threats', async () => { S.cache.threats = (await run('threats')).items; }); }
+function loadSandbox() { return task('sandbox', async () => { S.cache.sandbox = await run('sandboxStatus'); }); }
+async function defScan(type, path) {
+  if (type === 'Full' && !await confirmBox('Run a full scan?', 'Checks every file on every drive. It usually takes 1-3 hours - you can keep using the PC (games may run a bit slower). CleanIT can stay closed; the scan keeps going.', 'Start full scan')) return;
+  await task('scan_' + type, async () => {
+    const r = await run('defScan', { type, path }, prog('scan_' + type));
+    if (r.Found.length) toast(r.Found.length + ' threat(s) found - see Threats below.', 'warn');
+    else toast('Scan finished in ' + r.Minutes + ' min - no threats found.');
+    await loadProtect(); await loadThreats();
+  });
+}
+async function scanFolder() {
+  let path = '';
+  const c = await dialog('Scan a folder', [
+    h('p', { text: 'Type or paste a folder (or a drive like D:\\):' }),
+    h('input', { type: 'text', style: 'width:100%', list: 'scanplaces', oninput: e => { path = e.target.value; } }),
+    h('datalist', { id: 'scanplaces' }, (S.state.places || []).map(p => h('option', { value: p })))
+  ], [{ id: 'x', text: 'Cancel' }, { id: 'go', text: 'Scan', cls: 'primary' }]);
+  if (c === 'go' && path.trim()) defScan('Custom', path.trim());
+}
+async function offlineScan() {
+  if (!await confirmBox('Restart and run an offline scan?', [
+    h('p', { text: 'Microsoft Defender Offline restarts the PC into a minimal environment and scans before Windows - and any hidden malware - can start. It takes about 15 minutes, then Windows starts normally.' }),
+    h('p', { class: 'c-WARN', text: 'Save your work and close your apps first. The PC restarts right away.' })], 'Restart and scan', true)) return;
+  await task('offline', () => run('offlineScan'));
+}
+async function applyProtect() {
+  const changes = Object.entries(S.cache.protectChanges || {}).map(([key, on]) => ({ key, on }));
+  if (!changes.length) return;
+  const rp = await restorePointChoice(); if (rp === null) return;
+  await task('protectSet', async () => { S.cache.protect = await run('protectSet', { changes, restorePoint: rp }); S.cache.protectChanges = {}; toast('Protection settings applied.'); });
+}
+async function restoreThreat(t) {
+  if (!await confirmBox('Restore "' + t.Name + '" from quarantine?', [
+    h('p', { class: 'c-WARN', text: 'Only do this if you are sure the file is safe (a false alarm). A real threat will be able to run again.' }),
+    t.Files.length ? bullets(t.Files, 5) : null], 'Restore anyway', true)) return;
+  await task('restore', async () => { await run('threatRestore', { name: t.Name }); await loadThreats(); toast('Restored. Defender may flag it again on the next scan.'); });
+}
+async function enableSandbox() {
+  const sb = S.cache.sandbox;
+  if (!await confirmBox('Turn on Windows Sandbox?', [
+    h('p', { text: 'Windows adds the Sandbox feature (about 1 minute) and needs a restart to finish.' }),
+    sb.VirtualBox ? h('p', { class: 'c-WARN', text: 'You use VirtualBox: turning on Sandbox also turns on Windows\' Hyper-V platform. VirtualBox keeps working but its virtual machines can run noticeably slower. If your VMs matter more to you, skip this.' }) : null
+  ], 'Turn on', true)) return;
+  await task('sbEnable', async () => { const r = await run('sandboxEnable', {}, prog('sbEnable')); toast(r.restart ? 'Done - restart the PC to finish turning on Windows Sandbox.' : 'Windows Sandbox is on.'); await loadSandbox(); });
+}
+
 // ----- Health
 pages.health = {
   title: 'Health',
@@ -1191,10 +1375,36 @@ pages.health = {
       btn('Fix network (flush DNS)', () => task('dns', async () => { await run('flushDns'); toast('DNS cache flushed.'); }), '', 'dns'),
       btn('Create restore point', () => task('rp', async () => { await run('restorePointNow', {}, prog('rp')); toast('Restore point created.'); }), '', 'rp')),
       progLine('optimize') || progLine('repair')));
+    root.append(shutdownCard());
     root.append(h('div', { class: 'card' }, text ? h('pre', { class: 'report', text }) : h('div', { class: 'empty', text: 'Gathering...' })));
   }
 };
 function loadHealth() { return task('health', async () => { S.cache.health = (await run('health')).text; }); }
+function loadShutdowns() { return task('shutdowns', async () => { S.cache.shutdowns = await run('shutdowns'); }); }
+// Unexpected shutdowns: what happened, what to do, and "Got it" so old ones stop showing on the Dashboard.
+function shutdownCard() {
+  const sd = S.cache.shutdowns;
+  if (!sd) autoLoad('shutdowns', loadShutdowns);
+  const fmtWhen = iso => new Date(iso).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+  return h('div', { class: 'card' }, h('h3', {}, 'Unexpected shutdowns', h('small', { text: 'last 30 days' })),
+    !sd ? h('div', { class: 'muted', text: 'Reading the Windows event log...' }) : [
+      h('p', { style: 'margin-top:0' }, h('b', { text: sd.Verdict })),
+      sd.Advice.length ? bullets(sd.Advice) : null,
+      sd.Events.length ? table({ id: 'shutdowns', rows: sd.Events, height: '260px', rowKey: e => e.Back,
+        columns: [
+          { key: 'When', label: 'Power lost', render: e => fmtWhen(e.When), sort: e => e.When, descFirst: true },
+          { key: 'What', label: 'What happened', render: e => h('span', { class: e.Crash ? 'c-BAD' : null, text: e.What }) },
+          { key: 'Back', label: 'Started again', cls: 'muted', render: e => fmtWhen(e.Back), sort: e => e.Back },
+          { key: 'New', label: '', nosort: true, render: e => e.New ? h('span', { class: 'pill WARN', text: 'new' }) : h('span', { class: 'muted small', text: 'seen' }) }
+        ] }) : null,
+      sd.New ? h('div', { class: 'row', style: 'margin-top:10px' },
+        btn('Got it - stop warning about these', () => task('sdSeen', async () => {
+          await saveSettings({ ShutdownsSeen: true });
+          await loadShutdowns(); S.cache.dash = null;
+          toast('Done. Only new unexpected shutdowns will show on the Dashboard.');
+        }), 'primary', 'sdSeen'),
+        h('span', { class: 'muted small', text: 'Clears the Dashboard warning. If it happens again, it shows up again.' })) : null]);
+}
 
 // ----- Fleet
 pages.fleet = {
@@ -1290,7 +1500,14 @@ pages.settings = {
     const st = S.state, s = st.settings;
     S.cache.sched = S.cache.sched || { enabled: st.schedule, day: s.ScheduleDay, time: s.ScheduleTime, updates: !!s.ScheduleUpdates };
     const sc = S.cache.sched;
+    const theme = s.Theme || 'auto';
     root.append(
+      h('div', { class: 'card' }, h('h3', {}, 'Appearance'),
+        h('div', { class: 'opt' },
+          h('div', { class: 't' }, h('b', { text: 'Theme' }), h('div', { text: 'Dark mode is easier on the eyes at night. "Match Windows" follows your Windows light/dark setting.' })),
+          h('div', { class: 'seg' }, [['auto', 'Match Windows'], ['light', 'Light'], ['dark', 'Dark']].map(([id, label]) =>
+            h('button', { type: 'button', class: theme === id ? 'active' : null,
+              onclick: () => { applyTheme(id); saveSettings({ Theme: id }).then(render).catch(e => toast(e.message, 'error')); } }, label))))),
       h('div', { class: 'card' }, h('h3', {}, 'Safety'),
         h('div', { class: 'opt' }, toggle(!!s.RestorePoint, v => saveSettings({ RestorePoint: v }).then(render)),
           h('div', { class: 't' }, h('b', { text: 'Create a restore point before changes' }), h('div', { text: 'Before cleaning, removing apps, or changing privacy and services (once per session).' }))),
@@ -1370,6 +1587,32 @@ function newer(a, b) {
   for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d > 0; }
   return false;
 }
+const APP_NAMES = { chrome: 'Chrome', msedge: 'Edge', firefox: 'Firefox', brave: 'Brave', opera: 'Opera', vivaldi: 'Vivaldi', librewolf: 'LibreWolf',
+  waterfox: 'Waterfox', discord: 'Discord', discordptb: 'Discord PTB', discordcanary: 'Discord Canary', spotify: 'Spotify', teams: 'Teams', 'ms-teams': 'Teams',
+  slack: 'Slack', zoom: 'Zoom', code: 'VS Code', steam: 'Steam', steamwebhelper: 'Steam', epicgameslauncher: 'Epic Games Launcher', node: 'Node.js', java: 'Java', devenv: 'Visual Studio' };
+function appName(p) { return APP_NAMES[String(p).toLowerCase()] || p; }
+
+// Third-party antivirus notice: these products often block or slow CleanIT, and only the user can add an exception.
+function avBanner(list) {
+  const names = list.map(a => a.Name).join(', ');
+  return h('div', { class: 'card update-banner av-banner' },
+    h('div', { class: 't' }, h('b', { text: names + ' may block parts of CleanIT' }),
+      h('span', { class: 'muted', text: '  -  add an exception so scans and cleaning work fully' })),
+    btn('Show me how', () => avGuide(list), 'primary'),
+    btn('Hide', () => saveSettings({ AvNoticeHidden: true }).then(render), 'link'));
+}
+function avGuide(list) {
+  const folders = list[0].Folders || [];
+  const copy = text => navigator.clipboard.writeText(text).then(() => toast('Copied: ' + text), () => toast('Select the text and copy it with Ctrl+C.'));
+  return dialog('Let your antivirus allow CleanIT', [
+    h('p', { text: 'Antivirus apps like ' + list.map(a => a.Name).join(', ') + ' sometimes treat CleanIT as suspicious because it is a script that looks at system areas. They can block scans, remove files CleanIT needs, or make cleaning very slow. CleanIT cannot change their settings (they protect themselves) - this takes about a minute:' }),
+    list.map(a => h('div', { class: 'notice' }, h('b', { text: a.Name }), h('div', { text: a.Steps }))),
+    h('p', { style: 'margin-bottom:4px', text: 'Folders to add:' }),
+    folders.map(f => h('div', { class: 'row', style: 'margin:4px 0' }, h('code', { class: 'path', text: f }), btn('Copy', () => copy(f), 'link'))),
+    h('p', { class: 'muted small', text: 'Prefer not to? CleanIT still works, some scans may just be incomplete. Windows\' own Microsoft Defender works with CleanIT without any exceptions.' })
+  ], [{ id: 'x', text: 'Done', cls: 'primary' }], true);
+}
+
 function updateBanner(up) {
   return h('div', { class: 'card update-banner' },
     h('div', { class: 't' }, h('b', { text: 'CleanIT ' + up.Latest + ' is available' }), h('span', { class: 'muted', text: '  -  you have ' + up.Current })),
@@ -1419,9 +1662,20 @@ function updatesCard(st) {
     progLine('update'));
 }
 
+// Theme: 'auto' follows Windows (CSS media query); 'light'/'dark' force it. Remembered locally too so the
+// window opens in the right colours before the server answers.
+function applyTheme(t) {
+  if (t !== 'light' && t !== 'dark') t = 'auto';
+  if (t === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+  try { localStorage.setItem('cleanit-theme', t); } catch (e) { /* storage blocked - setting still saved on the server */ }
+}
+try { applyTheme(localStorage.getItem('cleanit-theme')); } catch (e) { /* ignore */ }
+
 async function init() {
   $('#drawer-head').addEventListener('click', () => $('#drawer').classList.toggle('collapsed'));
   try { S.state = await api('/api/state'); } catch (e) { return; }
+  applyTheme(S.state.settings.Theme);
   $('#nav-foot').textContent = S.state.computer + '  -  v' + S.state.version + (S.state.isAdmin ? '' : '  -  NOT ADMIN');
   const hash = location.hash.slice(1);
   if (pages[hash]) S.page = hash;
@@ -1429,5 +1683,5 @@ async function init() {
   ping(); pollLog();
   if (S.state.settings.UpdateCheck !== false) checkUpdates(false).catch(() => {});   // quiet; cached for 6 h on the server
 }
-window.addEventListener('hashchange', () => { const p = location.hash.slice(1); if (pages[p] && p !== S.page) { S.page = p; render(); } });
+window.addEventListener('hashchange', () => { const p = location.hash.slice(1); if (pages[p] && p !== S.page) { S.page = p; if (S.state) render(); } });
 init();
