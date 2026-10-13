@@ -3,7 +3,7 @@
 # every system change is reversible and its previous state is recorded under DataDir\State.
 
 $script:AppName     = 'CleanIT'
-$script:Version     = '2.7.0'
+$script:Version     = '2.7.1'
 $script:CorePath    = $PSCommandPath
 if ($env:CLEANIT_FAKE_VERSION) { $script:Version = $env:CLEANIT_FAKE_VERSION }   # updater tests only
 $script:DataDir     = $env:CLEANIT_DATADIR
@@ -802,6 +802,7 @@ function Get-DefaultSettings {
         AutoUpdate      = $false        # install updates automatically during the weekly clean
         AvNoticeHidden  = $false        # user dismissed the third-party antivirus notice
         ScanWithClean   = $false        # Defender quick scan as part of the weekly clean
+        Theme           = 'auto'        # app colours: auto (match Windows) / light / dark
     }
 }
 

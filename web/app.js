@@ -1474,7 +1474,14 @@ pages.settings = {
     const st = S.state, s = st.settings;
     S.cache.sched = S.cache.sched || { enabled: st.schedule, day: s.ScheduleDay, time: s.ScheduleTime, updates: !!s.ScheduleUpdates };
     const sc = S.cache.sched;
+    const theme = s.Theme || 'auto';
     root.append(
+      h('div', { class: 'card' }, h('h3', {}, 'Appearance'),
+        h('div', { class: 'opt' },
+          h('div', { class: 't' }, h('b', { text: 'Theme' }), h('div', { text: 'Dark mode is easier on the eyes at night. "Match Windows" follows your Windows light/dark setting.' })),
+          h('div', { class: 'seg' }, [['auto', 'Match Windows'], ['light', 'Light'], ['dark', 'Dark']].map(([id, label]) =>
+            h('button', { type: 'button', class: theme === id ? 'active' : null,
+              onclick: () => { applyTheme(id); saveSettings({ Theme: id }).then(render).catch(e => toast(e.message, 'error')); } }, label))))),
       h('div', { class: 'card' }, h('h3', {}, 'Safety'),
         h('div', { class: 'opt' }, toggle(!!s.RestorePoint, v => saveSettings({ RestorePoint: v }).then(render)),
           h('div', { class: 't' }, h('b', { text: 'Create a restore point before changes' }), h('div', { text: 'Before cleaning, removing apps, or changing privacy and services (once per session).' }))),
@@ -1629,9 +1636,20 @@ function updatesCard(st) {
     progLine('update'));
 }
 
+// Theme: 'auto' follows Windows (CSS media query); 'light'/'dark' force it. Remembered locally too so the
+// window opens in the right colours before the server answers.
+function applyTheme(t) {
+  if (t !== 'light' && t !== 'dark') t = 'auto';
+  if (t === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+  try { localStorage.setItem('cleanit-theme', t); } catch (e) { /* storage blocked - setting still saved on the server */ }
+}
+try { applyTheme(localStorage.getItem('cleanit-theme')); } catch (e) { /* ignore */ }
+
 async function init() {
   $('#drawer-head').addEventListener('click', () => $('#drawer').classList.toggle('collapsed'));
   try { S.state = await api('/api/state'); } catch (e) { return; }
+  applyTheme(S.state.settings.Theme);
   $('#nav-foot').textContent = S.state.computer + '  -  v' + S.state.version + (S.state.isAdmin ? '' : '  -  NOT ADMIN');
   const hash = location.hash.slice(1);
   if (pages[hash]) S.page = hash;

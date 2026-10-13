@@ -920,6 +920,10 @@ function Invoke-Api {
                 if ($null -ne $body.UpdateCheck) { $s.UpdateCheck = [bool]$body.UpdateCheck }
                 if ($null -ne $body.AutoUpdate) { $s.AutoUpdate = [bool]$body.AutoUpdate }
                 if ($null -ne $body.AvNoticeHidden) { $s.AvNoticeHidden = [bool]$body.AvNoticeHidden }
+                if ($null -ne $body.Theme) {
+                    if (@('auto', 'light', 'dark') -notcontains [string]$body.Theme) { throw 'Unknown theme.' }
+                    $s.Theme = [string]$body.Theme
+                }
                 if ($null -ne $body.WingetExclude) {
                     $s.WingetExclude = @($body.WingetExclude | Where-Object { Test-SafeId $_ '^[A-Za-z0-9][A-Za-z0-9._+\-]{0,120}$' })
                 }

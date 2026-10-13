@@ -3,7 +3,7 @@
 A transparent, no-snake-oil replacement for Avast Cleanup Premium / CCleaner for Windows 10/11.
 Two PowerShell files, no install required, no ads, no telemetry, everything logged and reversible.
 
-> **Status: beta (v2.7.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
+> **Status: beta (v2.7.1).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
 > uninstall leftovers, services, privacy changes) and the weekly task are new - leave "create a restore point"
 > switched on (default) and review every list before you click. Use at your own risk; see LICENSE.
 
@@ -54,7 +54,7 @@ If Windows blocks the downloaded files: right-click each > Properties > tick **U
 | Protect | Built on Microsoft Defender (no extra antivirus engine): quick / full / Downloads / folder / offline scans, one-click extra protection (block unwanted apps, block scam and malware sites, ransomware folder protection, stronger cloud blocking - each reversible), threat history in plain English with quarantine restore, scheduled scans, Windows Sandbox to test downloads safely, home network check (Wi-Fi security, open ports, connected devices) |
 | Health | SMART health + SSD wear/temperature, battery wear, blue screens / unexpected shutdowns / app crashes (30 days), GPU driver age, Optimize drives, Repair Windows (DISM + SFC), battery report, DNS flush |
 | Fleet | Health cards for every PC (score, free space, updates, problems), one-click OneDrive setup, "Add a PC" installer |
-| Settings | Restore points, weekly schedule (day/time, optional app updates), Undo center, install shortcuts |
+| Settings | Theme (Match Windows / Light / Dark), restore points, weekly schedule (day/time, optional app updates), Undo center, install shortcuts |
 
 ## Where CleanIT beats the paid cleaners
 - **Honest**: no registry cleaner, no RAM/game "booster", no fake "problems found" - every item is real and explained.
