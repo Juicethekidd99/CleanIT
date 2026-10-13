@@ -1021,8 +1021,12 @@ pages.updates = {
   }
 };
 function updApps(root) {
-  const items = S.cache.winget;
-  if (!items && S.state.winget) autoLoad('winget', loadWinget);
+  const all = S.cache.winget;
+  if (!all && S.state.winget) autoLoad('winget', loadWinget);
+  // apps that don't report their version (e.g. Roblox) always look outdated - list them separately
+  const isUnknown = u => u.UnknownVersion || u.Version === 'Unknown';
+  const items = all ? all.filter(u => !isUnknown(u)) : null;
+  const unknown = all ? all.filter(isUnknown) : [];
   const excl = new Set(S.state.settings.WingetExclude || []);
   const sel = S.sel.winget = S.sel.winget || new Set();
   const rec = (items || []).filter(u => u.Importance === 'Recommended' && !excl.has(u.Id)).length;
@@ -1043,7 +1047,7 @@ function updApps(root) {
     h('p', { class: 'muted small', text: '"Never update" apps are skipped here, by the weekly task and by -Updates.' }),
     progLine('wingetUpdate')));
   if (!items) { root.append(h('div', { class: 'empty', text: S.busy.winget ? 'Checking for app updates...' : 'Click Check again.' })); return; }
-  root.append(table({ id: 'winget', rows: items.slice().sort((a, b) => IMP_ORDER[a.Importance] - IMP_ORDER[b.Importance] || a.Name.localeCompare(b.Name)),
+  if (items.length) root.append(table({ id: 'winget', rows: items.slice().sort((a, b) => IMP_ORDER[a.Importance] - IMP_ORDER[b.Importance] || a.Name.localeCompare(b.Name)),
     selKey: 'winget', rowKey: u => u.Id, empty: 'All apps are up to date.', height: 'calc(100vh - 380px)', rowClass: u => excl.has(u.Id) ? 'muted' : '',
     columns: [
       { key: 'Importance', label: 'Advice', sort: u => IMP_ORDER[u.Importance], render: u => excl.has(u.Id) ? h('span', { class: 'pill INFO', text: 'Never update' }) : impPill(u.Importance) },
@@ -1055,13 +1059,19 @@ function updApps(root) {
           await saveSettings({ WingetExclude: [...excl] }); render();
         }, 'link') }
     ] }));
+  if (unknown.length) root.append(h('details', { class: 'card unknown-apps' },
+    h('summary', { text: 'Apps winget can\'t check (' + unknown.length + ')' }),
+    h('p', { class: 'muted small', text: 'These apps don\'t tell Windows which version is installed, so winget always lists them as "update available" - even right after updating. Most of them (like Roblox) update themselves when you open them, so you can ignore this list.' }),
+    unknown.map(u => h('div', { class: 'opt' },
+      h('div', { class: 't' }, h('b', { text: u.Name }), h('div', { class: 'small muted', text: 'Latest version: ' + u.Available })),
+      btn('Update anyway', () => task('wingetUpdate', async () => { await run('wingetUpdate', { ids: [u.Id] }, prog('wingetUpdate')); toast(u.Name + ' updated.'); }), 'link', 'wingetUpdate')))));
 }
 function loadWinget() {
   return task('winget', async () => {
     S.cache.winget = (await run('wingetList')).items;
     const excl = new Set(S.state.settings.WingetExclude || []);
     // pre-tick only the updates that matter
-    S.sel.winget = new Set(S.cache.winget.filter(u => !excl.has(u.Id) && u.Importance === 'Recommended').map(u => u.Id));
+    S.sel.winget = new Set(S.cache.winget.filter(u => !excl.has(u.Id) && u.Importance === 'Recommended' && !(u.UnknownVersion || u.Version === 'Unknown')).map(u => u.Id));
   });
 }
 function updWindows(root, type) {

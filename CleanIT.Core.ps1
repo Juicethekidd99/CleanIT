@@ -3,7 +3,7 @@
 # every system change is reversible and its previous state is recorded under DataDir\State.
 
 $script:AppName     = 'CleanIT'
-$script:Version     = '2.5.0'
+$script:Version     = '2.5.1'
 $script:CorePath    = $PSCommandPath
 if ($env:CLEANIT_FAKE_VERSION) { $script:Version = $env:CLEANIT_FAKE_VERSION }   # updater tests only
 $script:DataDir     = $env:CLEANIT_DATADIR
@@ -1957,11 +1957,14 @@ function Get-WingetUpgrades {
     $exclude = @((Get-Settings).WingetExclude)
     $lines = @(Invoke-Winget @('upgrade', '--include-unknown', '--accept-source-agreements'))
     $rows = @(ConvertFrom-WingetTable $lines)
-    Set-LastCheck 'AppUpdates' @($rows | Where-Object { $exclude -notcontains $_.Id }).Count
+    # Apps that don't report their installed version (Roblox...) always look "outdated" to winget, even right after
+    # updating, and usually update themselves. They are listed separately and never counted as waiting updates.
+    Set-LastCheck 'AppUpdates' @($rows | Where-Object { $exclude -notcontains $_.Id -and $_.Version -ne 'Unknown' }).Count
     foreach ($r in $rows) {
         $adv = Get-AppUpdateAdvice $r.Id $r.Name $r.Version
         $r | Add-Member -NotePropertyName Importance -NotePropertyValue $adv.Importance
         $r | Add-Member -NotePropertyName Why -NotePropertyValue $adv.Why
+        $r | Add-Member -NotePropertyName UnknownVersion -NotePropertyValue ($r.Version -eq 'Unknown')
         $r | Add-Member -NotePropertyName Excluded -NotePropertyValue ($exclude -contains $r.Id) -PassThru
     }
 }
@@ -1981,7 +1984,8 @@ function Invoke-WingetUpgrade {
 
 function Invoke-AllAppUpdates {
     if (-not (Test-Winget)) { Write-Log 'winget not found - install App Installer from the Microsoft Store.' 'WARN'; return }
-    $ids = @(Get-WingetUpgrades | Where-Object { -not $_.Excluded } | ForEach-Object { $_.Id })
+    # skip unknown-version apps: they would be reinstalled every single run for nothing
+    $ids = @(Get-WingetUpgrades | Where-Object { -not $_.Excluded -and -not $_.UnknownVersion } | ForEach-Object { $_.Id })
     if (-not $ids.Count) { Write-Log 'All apps are up to date.' 'OK'; return }
     Invoke-WingetUpgrade $ids
 }
