@@ -3,7 +3,7 @@
 # every system change is reversible and its previous state is recorded under DataDir\State.
 
 $script:AppName     = 'CleanIT'
-$script:Version     = '2.7.1'
+$script:Version     = '2.7.2'
 $script:CorePath    = $PSCommandPath
 if ($env:CLEANIT_FAKE_VERSION) { $script:Version = $env:CLEANIT_FAKE_VERSION }   # updater tests only
 $script:DataDir     = $env:CLEANIT_DATADIR
@@ -801,6 +801,7 @@ function Get-DefaultSettings {
         UpdateCheck     = $true         # look for a newer CleanIT on GitHub (at most every 6 h)
         AutoUpdate      = $false        # install updates automatically during the weekly clean
         AvNoticeHidden  = $false        # user dismissed the third-party antivirus notice
+        ShutdownsSeenUntil = ''         # unexpected shutdowns before this time were reviewed (Health > Got it)
         ScanWithClean   = $false        # Defender quick scan as part of the weekly clean
         Theme           = 'auto'        # app colours: auto (match Windows) / light / dark
     }
@@ -3030,6 +3031,70 @@ function Get-StabilitySummary {
     } 30 $empty
 }
 
+# Unexpected shutdowns explained. Kernel-Power 41 = Windows started after it was not shut down properly; its
+# BugcheckCode is non-zero when it was a blue screen. Event 6008 (logged at the same boot) says when power was lost.
+# WHEA-Logger = hardware errors (CPU/RAM/PCIe), which point at PSU, heat or unstable overclocks.
+function Get-ShutdownHistory {
+    $seen = $null
+    $s = Get-Settings
+    if ($s.ShutdownsSeenUntil) { try { $seen = [datetime]::Parse([string]$s.ShutdownsSeenUntil, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToLocalTime() } catch { } }
+    $raw = Invoke-WithTimeout 'Shutdown history (event log)' {
+        $since = (Get-Date).AddDays(-30)
+        $k41 = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Kernel-Power'; Id = 41; StartTime = $since } -ErrorAction SilentlyContinue)
+        $e6008 = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 6008; StartTime = $since } -ErrorAction SilentlyContinue)
+        $whea = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WHEA-Logger'; StartTime = $since } -ErrorAction SilentlyContinue).Count
+        $items = foreach ($e in $k41) {
+            $x = [xml]$e.ToXml(); $d = @{}
+            foreach ($n in $x.Event.EventData.Data) { $d[[string]$n.Name] = [string]$n.'#text' }
+            # 6008 holds the time power was lost; property 7 is a binary SYSTEMTIME (local time) - no locale parsing
+            $lost = $null
+            $created = $e.TimeCreated
+            $m = $e6008 | Where-Object { [math]::Abs(($_.TimeCreated - $created).TotalMinutes) -lt 5 } | Select-Object -First 1
+            if ($m -and $m.Properties.Count -ge 8) {
+                $b = $m.Properties[7].Value
+                if ($b -is [byte[]] -and $b.Length -ge 16) {
+                    $w = { param($i) [int]$b[$i] + 256 * [int]$b[$i + 1] }
+                    try { $lost = New-Object datetime ((& $w 0), (& $w 2), (& $w 6), (& $w 8), (& $w 10), (& $w 12)) } catch { $lost = $null }
+                }
+            }
+            [pscustomobject]@{
+                Restarted = $e.TimeCreated; Lost = $lost
+                Crash = ([string]$d['BugcheckCode'] -ne '' -and [string]$d['BugcheckCode'] -ne '0')
+                Button = ([string]$d['PowerButtonTimestamp'] -ne '' -and [string]$d['PowerButtonTimestamp'] -ne '0')
+                Sleeping = ([string]$d['SleepInProgress'] -ne '' -and [string]$d['SleepInProgress'] -ne '0')
+            }
+        }
+        [pscustomobject]@{ Items = @($items); Whea = $whea }
+    } 30 $null
+    if (-not $raw) { return [pscustomobject]@{ Events = @(); New = 0; HardwareErrors = 0; Verdict = 'Could not read the Windows event log.'; Advice = @() } }
+
+    $events = @($raw.Items | Sort-Object Restarted -Descending | ForEach-Object {
+        $when = $(if ($_.Lost) { $_.Lost } else { $_.Restarted })
+        $what = $(if ($_.Crash) { 'Blue screen (Windows crashed)' } elseif ($_.Sleeping) { 'Lost power while asleep' } elseif ($_.Button) { 'Power button held down' } else { 'Power cut while Windows was running' })
+        [pscustomobject]@{ When = $when.ToString('o'); Back = $_.Restarted.ToString('o'); What = $what; Crash = $_.Crash; New = (-not $seen -or $_.Restarted -gt $seen) }
+    })
+    $crashes = @($events | Where-Object Crash).Count
+    $advice = @()
+    if (-not $events.Count) { $verdict = 'No unexpected shutdowns in the last 30 days.' }
+    elseif ($crashes) {
+        $verdict = "$crashes of these were blue screens - Windows crashed."
+        $advice = @('Update the graphics and chipset drivers (Drivers page) and run Repair Windows (above).',
+                    'If it keeps happening, undo any overclock (CPU, RAM/XMP, GPU) and check temperatures.')
+    }
+    elseif ($raw.Whea -gt 0) {
+        $verdict = "Windows also logged $($raw.Whea) hardware error(s) in the same period - the PC may be switching off by itself."
+        $advice = @('Common causes: an unstable overclock or XMP/EXPO memory profile, overheating, or a weak/failing power supply.',
+                    'Try the BIOS defaults for CPU/RAM speed, clean dust from the fans, and check temperatures under load.')
+    }
+    else {
+        $verdict = 'Windows did not crash. Each time, the power was simply cut while Windows was running - no error and no overheating warning was logged first.'
+        $advice = @('This almost always means the PC was turned off by holding the power button, by switching off the wall socket, power strip or the switch on the back, or by a power cut.',
+                    'If that was you: use Start > Power > Shut down instead (or press the power button once, briefly). Cutting the power can damage files and half-installed Windows updates.',
+                    'If the PC switched off on its own while you were using it, that points to the power supply or overheating rather than anything in Windows.')
+    }
+    [pscustomobject]@{ Events = $events; New = @($events | Where-Object New).Count; HardwareErrors = [int]$raw.Whea; Verdict = $verdict; Advice = $advice }
+}
+
 # Physical disks with health as plain text. Converted inside the worker runspace: the Storage module's
 # friendly names (Healthy, SSD...) do not survive the trip between runspaces - raw codes (0, 4) arrive instead.
 function Get-DiskHealthInfo {
@@ -3129,7 +3194,7 @@ function Get-HealthReport {
     $L.Add(('  Unexpected shutdowns: {0}   Blue screens: {1}   App crashes: {2}' -f $st.Unexpected, $st.BlueScreens, $st.AppCrashes))
     if ($st.TopCrashers.Count) { $L.Add('  Most crashes: ' + ($st.TopCrashers -join ', ')) }
     if ($st.BlueScreens -gt 0) { $L.Add('  ! Blue screens happened - check drivers (GPU, chipset) and run Repair Windows.') }
-    if ($st.Unexpected -ge 3) { $L.Add('  ! Several unexpected shutdowns (power loss, hard reset, freezes or PSU/overheating). If you did not cut power yourself, check temperatures and power supply.') }
+    if ($st.Unexpected -ge 3) { $L.Add('  ! Several unexpected shutdowns - "Unexpected shutdowns" above explains what happened.') }
 
     $L.Add(''); $L.Add('TOP MEMORY USERS')
     Get-Process | Group-Object ProcessName | ForEach-Object {
@@ -3191,7 +3256,8 @@ function Get-DashboardData {
 
     $stab = Get-StabilitySummary
     if ($stab.BlueScreens -gt 0) { & $add 15 'BAD' "$($stab.BlueScreens) blue screen(s) in the last 30 days - see the Health tab" 'Health' }
-    if ($stab.Unexpected -ge 3) { & $add 5 'WARN' "$($stab.Unexpected) unexpected shutdowns in the last 30 days (power loss, freezes or hard resets)" 'Health' }
+    $sh = Get-ShutdownHistory
+    if ($sh.New -ge 2) { & $add 5 'WARN' "$($sh.New) unexpected shutdowns in the last 30 days - see what happened" 'Health' }
 
     $startup = @(Get-StartupItems -Quick | Where-Object { $_.Enabled }).Count
     if ($startup -gt 10) { & $add 10 'WARN' "$startup apps launch at sign-in - slows startup" 'Startup' }

@@ -532,6 +532,7 @@ $script:Actions = @{
     networkCheck = @{ Name = 'Checking your network'; Work = { param($P) Get-NetworkCheck } }
 
     health = @{ Name = 'Health report'; Work = { param($P) [pscustomobject]@{ text = (Get-HealthReport) } } }
+    shutdowns = @{ Name = 'Reading shutdown history'; Work = { param($P) Get-ShutdownHistory } }
     optimize = @{ Name = 'Optimizing drives'; Work = { param($P) Invoke-DriveOptimize } }
     repair = @{ Name = 'Repairing Windows'; Work = { param($P) Invoke-WindowsRepair } }
     flushDns = @{ Name = 'Flushing DNS'; Work = { param($P) & ipconfig.exe /flushdns 2>&1 | Out-Null; Write-Log 'DNS cache flushed. If websites still fail, restart the router or use Settings > Network reset.' 'OK' } }
@@ -920,6 +921,7 @@ function Invoke-Api {
                 if ($null -ne $body.UpdateCheck) { $s.UpdateCheck = [bool]$body.UpdateCheck }
                 if ($null -ne $body.AutoUpdate) { $s.AutoUpdate = [bool]$body.AutoUpdate }
                 if ($null -ne $body.AvNoticeHidden) { $s.AvNoticeHidden = [bool]$body.AvNoticeHidden }
+                if ($body.ShutdownsSeen -eq $true) { $s.ShutdownsSeenUntil = (Get-Date).ToUniversalTime().ToString('o') }
                 if ($null -ne $body.Theme) {
                     if (@('auto', 'light', 'dark') -notcontains [string]$body.Theme) { throw 'Unknown theme.' }
                     $s.Theme = [string]$body.Theme

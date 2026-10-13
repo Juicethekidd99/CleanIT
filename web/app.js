@@ -1375,10 +1375,36 @@ pages.health = {
       btn('Fix network (flush DNS)', () => task('dns', async () => { await run('flushDns'); toast('DNS cache flushed.'); }), '', 'dns'),
       btn('Create restore point', () => task('rp', async () => { await run('restorePointNow', {}, prog('rp')); toast('Restore point created.'); }), '', 'rp')),
       progLine('optimize') || progLine('repair')));
+    root.append(shutdownCard());
     root.append(h('div', { class: 'card' }, text ? h('pre', { class: 'report', text }) : h('div', { class: 'empty', text: 'Gathering...' })));
   }
 };
 function loadHealth() { return task('health', async () => { S.cache.health = (await run('health')).text; }); }
+function loadShutdowns() { return task('shutdowns', async () => { S.cache.shutdowns = await run('shutdowns'); }); }
+// Unexpected shutdowns: what happened, what to do, and "Got it" so old ones stop showing on the Dashboard.
+function shutdownCard() {
+  const sd = S.cache.shutdowns;
+  if (!sd) autoLoad('shutdowns', loadShutdowns);
+  const fmtWhen = iso => new Date(iso).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+  return h('div', { class: 'card' }, h('h3', {}, 'Unexpected shutdowns', h('small', { text: 'last 30 days' })),
+    !sd ? h('div', { class: 'muted', text: 'Reading the Windows event log...' }) : [
+      h('p', { style: 'margin-top:0' }, h('b', { text: sd.Verdict })),
+      sd.Advice.length ? bullets(sd.Advice) : null,
+      sd.Events.length ? table({ id: 'shutdowns', rows: sd.Events, height: '260px', rowKey: e => e.Back,
+        columns: [
+          { key: 'When', label: 'Power lost', render: e => fmtWhen(e.When), sort: e => e.When, descFirst: true },
+          { key: 'What', label: 'What happened', render: e => h('span', { class: e.Crash ? 'c-BAD' : null, text: e.What }) },
+          { key: 'Back', label: 'Started again', cls: 'muted', render: e => fmtWhen(e.Back), sort: e => e.Back },
+          { key: 'New', label: '', nosort: true, render: e => e.New ? h('span', { class: 'pill WARN', text: 'new' }) : h('span', { class: 'muted small', text: 'seen' }) }
+        ] }) : null,
+      sd.New ? h('div', { class: 'row', style: 'margin-top:10px' },
+        btn('Got it - stop warning about these', () => task('sdSeen', async () => {
+          await saveSettings({ ShutdownsSeen: true });
+          await loadShutdowns(); S.cache.dash = null;
+          toast('Done. Only new unexpected shutdowns will show on the Dashboard.');
+        }), 'primary', 'sdSeen'),
+        h('span', { class: 'muted small', text: 'Clears the Dashboard warning. If it happens again, it shows up again.' })) : null]);
+}
 
 // ----- Fleet
 pages.fleet = {
