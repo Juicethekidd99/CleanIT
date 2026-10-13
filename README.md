@@ -3,7 +3,7 @@
 A transparent, no-snake-oil replacement for Avast Cleanup Premium / CCleaner for Windows 10/11.
 Two PowerShell files, no install required, no ads, no telemetry, everything logged and reversible.
 
-> **Status: beta (v2.0.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
+> **Status: beta (v2.1.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
 > uninstall leftovers, services, privacy changes) and the weekly task are new - leave "create a restore point"
 > switched on (default) and review every list before you click. Use at your own risk; see LICENSE.
 
@@ -11,10 +11,24 @@ Two PowerShell files, no install required, no ads, no telemetry, everything logg
 Windows 10 or 11, Windows PowerShell 5.1 (built in), administrator rights. winget (App Installer) for app updates.
 
 ## Quick start
-1. Keep `CleanIT.ps1`, `CleanIT.Core.ps1` and `Run-CleanIT.bat` in the same folder.
-2. Double-click `Run-CleanIT.bat` and approve the UAC prompt.
-3. On the **Dashboard** click **Smart Scan**, then **Clean ...** - or go tab by tab.
+1. Download the repo (Code > Download ZIP) and extract it. Keep all files and the `web` folder together.
+2. Double-click `CleanIT.vbs` (or `Run-CleanIT.bat`) and approve the UAC prompt.
+3. CleanIT opens in its own app window. On the **Dashboard** click **Smart Scan**, then **Clean ...**.
 4. Optional: **Settings > Install** adds Start menu + desktop shortcuts (copies to `C:\ProgramData\CleanIT`).
+
+## How the app works
+The interface is a local web app: `CleanIT.ps1` starts a tiny server on `127.0.0.1` (this PC only, random port)
+and opens it in an Edge app window - no browser tabs, no address bar, no console window. Closing the window
+stops CleanIT (unless a task such as Windows Update is still running). Nothing is sent to the internet.
+The server only accepts the window it opened (one-time login token + HttpOnly/SameSite cookie, Host check,
+custom header on every change), so other websites or users on the PC can't control it.
+
+## Fleet (all your PCs in one place)
+1. **Fleet > Use my OneDrive** - this PC starts reporting to `OneDrive\CleanIT Fleet`.
+2. **Fleet > Add a PC > Create setup** - puts an "Add a PC - CleanIT setup" folder in that OneDrive folder.
+3. On the other PC (same OneDrive account) open that folder and double-click **Install CleanIT on this PC**.
+   It installs CleanIT, turns on the weekly clean and joins the fleet - nothing to type.
+No OneDrive? Use "Put setup on my Desktop", copy the folder over (USB), or point every PC at a shared folder.
 
 If Windows blocks the downloaded files: right-click each > Properties > tick **Unblock**, or run
 `Get-ChildItem .\* | Unblock-File`.
@@ -31,7 +45,8 @@ If Windows blocks the downloaded files: right-click each > Properties > tick **U
 | Privacy | 23 toggles (ads, tips, telemetry, Bing in Start, Recall, Copilot...). Original values saved; "Restore everything" button |
 | Security | Antivirus, Defender signatures/scan age/tamper protection, threats, firewall, UAC, SmartScreen, Secure Boot, TPM, HVCI, BitLocker, SMBv1, Guest, RDP, Windows support status, outdated apps |
 | Health | SMART health + SSD wear/temperature, battery wear, blue screens / unexpected shutdowns / app crashes (30 days), GPU driver age, Optimize drives, Repair Windows (DISM + SFC), battery report, DNS flush |
-| Settings | Restore points, weekly schedule (day/time, optional app updates), fleet folder, Undo center, install shortcuts |
+| Fleet | Health cards for every PC (score, free space, updates, problems), one-click OneDrive setup, "Add a PC" installer |
+| Settings | Restore points, weekly schedule (day/time, optional app updates), Undo center, install shortcuts |
 
 ## Where CleanIT beats the paid cleaners
 - **Honest**: no registry cleaner, no RAM/game "booster", no fake "problems found" - every item is real and explained.

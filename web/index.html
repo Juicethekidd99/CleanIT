@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CleanIT</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="app">
+  <aside id="nav">
+    <div class="brand"><img src="/favicon.png" alt=""><div><b>CleanIT</b><span>Clean &middot; Speed up &middot; Protect</span></div></div>
+    <nav id="nav-items"></nav>
+    <div class="nav-foot" id="nav-foot"></div>
+  </aside>
+  <main id="main">
+    <header id="topbar">
+      <h1 id="page-title"></h1>
+      <div id="jobs"></div>
+    </header>
+    <section id="page"></section>
+    <footer id="drawer" class="collapsed">
+      <button id="drawer-head" type="button"><span class="dot"></span><span id="drawer-last">Activity</span><span class="chev"></span></button>
+      <div id="log"></div>
+    </footer>
+  </main>
+</div>
+<div id="modal-root"></div>
+<div id="toasts"></div>
+<script src="/app.js"></script>
+</body>
+</html>

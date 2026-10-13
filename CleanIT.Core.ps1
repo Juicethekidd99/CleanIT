@@ -3,7 +3,7 @@
 # every system change is reversible and its previous state is recorded under DataDir\State.
 
 $script:AppName     = 'CleanIT'
-$script:Version     = '2.0.0'
+$script:Version     = '2.1.0'
 $script:CorePath    = $PSCommandPath
 $script:DataDir     = $env:CLEANIT_DATADIR
 if (-not $script:DataDir) { $script:DataDir = Join-Path $env:ProgramData 'CleanIT' }
@@ -26,9 +26,18 @@ foreach ($d in @($script:DataDir, $script:StateDir, $script:BackupDir, $script:L
 $script:LogSink = $null    # RichTextBox when the GUI is running
 $script:Quiet   = $false   # -Silent
 
+$script:LogBuffer = $null   # list of log entries when the web UI server is running
+$script:LogSeq = 0
+
 function Write-LogLine {
     param([string]$Line, [string]$Level = 'INFO')
     Add-Content -Path $script:LogFile -Value $Line
+    if ($null -ne $script:LogBuffer) {
+        $script:LogSeq++
+        $script:LogBuffer.Add([pscustomobject]@{ n = $script:LogSeq; level = $Level; text = $Line })
+        if ($script:LogBuffer.Count -gt 3000) { $script:LogBuffer.RemoveRange(0, 1000) }
+        return
+    }
     if ($script:LogSink) {
         $color = switch ($Level) {
             'WARN'  { [System.Drawing.Color]::FromArgb(250, 204, 21) }
@@ -2342,7 +2351,7 @@ function Get-DashboardData {
         Computer = $env:COMPUTERNAME; Version = $script:Version; Time = (Get-Date).ToString('s')
         Score = [int]$score; Issues = @($issues | Sort-Object Penalty -Descending)
         FreePct = [math]::Round($freePct, 1); FreeBytes = [double]$sys.FreeSpace; SizeBytes = [double]$sys.Size
-        FreedTotal = (Get-FreedTotal); LastClean = $lastDate; LastFreed = $(if ($last) { [double]$last.Freed } else { 0 })
+        FreedTotal = (Get-FreedTotal); LastClean = $(if ($lastDate) { $lastDate.ToString('s') } else { $null }); LastFreed = $(if ($last) { [double]$last.Freed } else { 0 })
         LastScheduled = $(if ($lastSched) { $lastSched.Date } else { $null })
         StartupCount = $startup; PendingReboot = (Test-PendingReboot); Uptime = [math]::Round($up.TotalDays, 1)
         AppUpdates = [int]$lc.AppUpdates; WinUpdates = [int]$lc.WinUpdates; OS = $os.Caption; Build = $os.BuildNumber
@@ -2371,6 +2380,121 @@ function Get-FleetReports {
         $j = Read-JsonFile $f.FullName
         if ($j -and $j.Computer) { $j }
     }
+}
+
+# --- Fleet made simple: OneDrive folder + a self-installing "Add a PC" setup ---
+function Get-OneDriveFolder {
+    foreach ($v in @($env:OneDriveConsumer, $env:OneDrive, $env:OneDriveCommercial)) {
+        if ($v -and (Test-Path -LiteralPath $v)) { return $v.TrimEnd('\') }
+    }
+    foreach ($acct in @('Personal', 'Business1')) {
+        $p = (Get-ItemProperty "HKCU:\Software\Microsoft\OneDrive\Accounts\$acct" -Name UserFolder -ErrorAction SilentlyContinue).UserFolder
+        if ($p -and (Test-Path -LiteralPath $p)) { return $p.TrimEnd('\') }
+    }
+    $null
+}
+
+function Get-FleetStatus {
+    $s = Get-Settings
+    $od = Get-OneDriveFolder
+    $path = [string]$s.FleetPath
+    $mode = 'off'
+    if ($path) {
+        $mode = 'custom'
+        if ($od -and $path.StartsWith($od, [StringComparison]::OrdinalIgnoreCase)) { $mode = 'onedrive' }
+    }
+    $setup = ''
+    if ($path) { $sp = Join-Path $path 'Add a PC - CleanIT setup'; if (Test-Path -LiteralPath $sp) { $setup = $sp } }
+    [pscustomobject]@{
+        Mode = $mode; Path = $path; OneDrive = $od; Reachable = [bool]($path -and (Test-Path -LiteralPath $path))
+        SetupFolder = $setup; Computer = $env:COMPUTERNAME
+    }
+}
+
+function Set-FleetPath {
+    param([string]$Path)
+    $s = Get-Settings
+    $s.FleetPath = $Path
+    Save-Settings $s
+    if ($Path) {
+        if (-not (Test-Path -LiteralPath $Path)) { New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop | Out-Null }
+        Write-Log "Fleet folder: $Path" 'OK'
+        Write-FleetReport
+    }
+    else { Write-Log 'Fleet reporting turned off.' 'OK' }
+}
+
+function Use-OneDriveFleet {
+    $od = Get-OneDriveFolder
+    if (-not $od) { throw 'OneDrive is not set up on this PC. Sign in to OneDrive first, or choose a folder yourself.' }
+    Set-FleetPath (Join-Path $od 'CleanIT Fleet')
+}
+
+# Builds a folder with CleanIT + the fleet settings + "Install CleanIT on this PC.bat".
+# Put inside the OneDrive fleet folder, any PC signed in to the same OneDrive just double-clicks it.
+function New-FleetSetup {
+    param([string]$SourceDir, [string]$Destination)
+    $s = Get-Settings
+    if (-not $s.FleetPath) { throw 'Set up the fleet folder first.' }
+    if (-not $Destination) { $Destination = $s.FleetPath }
+    $dir = Join-Path $Destination 'Add a PC - CleanIT setup'
+    if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    foreach ($f in $script:AppFiles) {
+        $src = Join-Path $SourceDir $f
+        if (Test-Path -LiteralPath $src) {
+            $dst = Join-Path $dir $f
+            New-Item -ItemType Directory -Path (Split-Path -Parent $dst) -Force | Out-Null
+            Copy-Item -LiteralPath $src -Destination $dst -Force
+        }
+    }
+    # Store the OneDrive part as %OneDrive% so it resolves to each PC's own OneDrive folder.
+    $fleet = [string]$s.FleetPath
+    $od = Get-OneDriveFolder
+    if ($od -and $fleet.StartsWith($od, [StringComparison]::OrdinalIgnoreCase)) { $fleet = '%OneDrive%' + $fleet.Substring($od.Length) }
+    Write-JsonFile (Join-Path $dir 'fleet.json') ([pscustomobject]@{
+        FleetPath = $fleet; ScheduleDay = $s.ScheduleDay; ScheduleTime = $s.ScheduleTime; ScheduleUpdates = [bool]$s.ScheduleUpdates
+        CreatedOn = $env:COMPUTERNAME; Created = (Get-Date).ToString('s')
+    })
+    $bat = "@echo off`r`nrem Installs CleanIT on this PC and adds it to the fleet. Asks for admin (UAC).`r`n" +
+           "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"%~dp0CleanIT.ps1`" -JoinFleet `"%~dp0fleet.json`"`r`n"
+    [IO.File]::WriteAllText((Join-Path $dir 'Install CleanIT on this PC.bat'), $bat, [Text.Encoding]::ASCII)
+    $readme = "To add another PC to your CleanIT fleet:`r`n`r`n1. On the other PC, open this folder (same OneDrive account), or copy it over on a USB stick.`r`n" +
+              "2. Double-click 'Install CleanIT on this PC.bat' and click Yes on the Windows prompt.`r`n`r`n" +
+              "CleanIT installs itself, turns on the weekly clean, and the PC shows up on the Fleet page.`r`n"
+    [IO.File]::WriteAllText((Join-Path $dir 'READ ME.txt'), $readme, [Text.Encoding]::ASCII)
+    Write-Log "Fleet setup created: $dir" 'OK'
+    $dir
+}
+
+function Join-Fleet {
+    param([string]$ConfigFile, [string]$SourceDir)
+    $cfg = Read-JsonFile $ConfigFile
+    if (-not $cfg -or -not $cfg.FleetPath) { throw "Not a CleanIT fleet file: $ConfigFile" }
+    $path = [string]$cfg.FleetPath
+    if ($path.StartsWith('%OneDrive%', [StringComparison]::OrdinalIgnoreCase)) {
+        $od = Get-OneDriveFolder
+        if (-not $od) { throw 'This fleet lives in OneDrive, but OneDrive is not set up on this PC. Sign in to OneDrive with the same account and run the installer again.' }
+        $path = $od + $path.Substring('%OneDrive%'.Length)
+    }
+    $s = Get-Settings
+    if ($cfg.ScheduleDay) { $s.ScheduleDay = [string]$cfg.ScheduleDay }
+    if ($cfg.ScheduleTime) { $s.ScheduleTime = [string]$cfg.ScheduleTime }
+    $s.ScheduleUpdates = [bool]$cfg.ScheduleUpdates
+    $s.FleetPath = $path
+    Save-Settings $s
+    Install-CleanITApp $SourceDir
+    Install-Schedule $SourceDir
+    Write-FleetReport
+    Write-Log "$env:COMPUTERNAME joined the fleet at $path" 'OK'
+}
+
+function Remove-FleetReport {
+    param([string]$Computer)
+    if ($Computer -notmatch '^[A-Za-z0-9._-]{1,63}$') { throw 'Invalid computer name.' }
+    $path = (Get-Settings).FleetPath
+    $f = Join-Path $path "$Computer.json"
+    if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force; Write-Log "Removed $Computer from the fleet view." 'OK' }
 }
 
 # ---------------------------------------------------------------------------
@@ -2410,13 +2534,18 @@ function Protect-DataDir {
     & icacls.exe $script:DataDir /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' /T /C /Q 2>&1 | Out-Null
 }
 
+$script:AppFiles = @('CleanIT.ps1', 'CleanIT.Core.ps1', 'CleanIT.Server.ps1', 'CleanIT.vbs', 'Run-CleanIT.bat',
+                     'web\index.html', 'web\app.css', 'web\app.js', 'LICENSE', 'README.md')
+
 function Copy-AppFiles {
     param([string]$SourceDir)
-    $files = @('CleanIT.ps1', 'CleanIT.Core.ps1', 'Run-CleanIT.bat')
-    foreach ($f in $files) {
+    foreach ($f in $script:AppFiles) {
         $src = Join-Path $SourceDir $f
         $dst = Join-Path $script:DataDir $f
-        if ((Test-Path -LiteralPath $src) -and ($src -ne $dst)) { Copy-Item -LiteralPath $src -Destination $dst -Force }
+        if ((Test-Path -LiteralPath $src) -and ($src -ne $dst)) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $dst) -Force | Out-Null
+            Copy-Item -LiteralPath $src -Destination $dst -Force
+        }
         if (Test-Path -LiteralPath $dst) { Unblock-File -LiteralPath $dst -ErrorAction SilentlyContinue }
     }
     Protect-DataDir
@@ -2517,7 +2646,8 @@ function Show-Notification {
 
 function Install-CleanITApp {
     param([string]$SourceDir)
-    $main = Copy-AppFiles $SourceDir
+    [void](Copy-AppFiles $SourceDir)
+    $vbs = Join-Path $script:DataDir 'CleanIT.vbs'
     $ico = Join-Path $script:DataDir 'CleanIT.ico'
     Save-CleanITIco $ico
     $shell = New-Object -ComObject WScript.Shell
@@ -2526,8 +2656,9 @@ function Install-CleanITApp {
         (Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'CleanIT.lnk'))
     foreach ($t in $targets) {
         $lnk = $shell.CreateShortcut($t)
-        $lnk.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-        $lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$main`""
+        # wscript + CleanIT.vbs = no console window at all
+        $lnk.TargetPath = "$env:SystemRoot\System32\wscript.exe"
+        $lnk.Arguments = "`"$vbs`""
         $lnk.IconLocation = "$ico,0"
         $lnk.Description = 'CleanIT - clean, speed up and secure this PC'
         $lnk.WorkingDirectory = $script:DataDir

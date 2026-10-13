@@ -19,6 +19,11 @@ and skip the snake oil.
 - [x] Extras: Security tab, crash/BSOD/unexpected shutdown history, SSD wear/temperature, battery wear, GPU driver age,
       Windows end-of-support warning, DISM+SFC repair, DNS flush, renamed to CleanIT
 
+## Done in v2.1.0
+- [x] Local web-app UI in its own window (replaces WinForms), no console window, secure localhost server
+- [x] Fleet page: one-click OneDrive fleet, "Add a PC" self-installing setup, PC cards, remove PC
+- [x] Timeouts around every system query that can hang
+
 ## Phase 4 - Packaging (next)
 - Compile to `CleanIT.exe` with PS2EXE (custom icon, requireAdmin manifest) - note: the core is dot-sourced, so either
   bundle it or inline it at build time
