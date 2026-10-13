@@ -3,7 +3,7 @@
 # every system change is reversible and its previous state is recorded under DataDir\State.
 
 $script:AppName     = 'CleanIT'
-$script:Version     = '2.5.1'
+$script:Version     = '2.6.0'
 $script:CorePath    = $PSCommandPath
 if ($env:CLEANIT_FAKE_VERSION) { $script:Version = $env:CLEANIT_FAKE_VERSION }   # updater tests only
 $script:DataDir     = $env:CLEANIT_DATADIR
@@ -800,6 +800,7 @@ function Get-DefaultSettings {
         ShowMicrosoft   = $false        # show Microsoft tasks/services in Startup
         UpdateCheck     = $true         # look for a newer CleanIT on GitHub (at most every 6 h)
         AutoUpdate      = $false        # install updates automatically during the weekly clean
+        AvNoticeHidden  = $false        # user dismissed the third-party antivirus notice
     }
 }
 
@@ -1310,6 +1311,10 @@ function Invoke-CategoryClean {
     Write-Log "Cleaning: $($Cat.Name)"
     $running = Get-RunningForCategory $Cat
     if ($running.Count) { Write-Log ('  Close these for a full clean: ' + ($running -join ', ')) 'WARN' }
+    # Files an open app is using can't be deleted - remember how much, so the UI can explain the difference
+    # between the scan estimate and what was actually freed.
+    $script:LastSkippedBytes = 0
+    $script:LastBusyApps = @($running)
     if ($Cat.Before) { & $Cat.Before | Out-Null }
     $freed = 0
     try {
@@ -1323,12 +1328,12 @@ function Invoke-CategoryClean {
                     Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
                     $freed += $f.Length; $deleted++
                 }
-                catch { $skipped++ }
+                catch { $skipped++; $script:LastSkippedBytes += $f.Length }
                 $i++
                 if (($i % 250) -eq 0) { Invoke-UiPump; if (Test-BgCancel) { break } }
             }
             Remove-EmptyFolders $Cat
-            Write-Log ('  {0} files removed, {1} skipped (in use or protected)' -f $deleted, $skipped)
+            Write-Log ('  {0} files removed, {1} skipped (in use or protected, {2})' -f $deleted, $skipped, (Format-Size $script:LastSkippedBytes))
         }
     }
     finally {
@@ -1365,7 +1370,8 @@ function Invoke-CleanRun {
     param([string[]]$Keys, [string]$Source = 'Manual', [switch]$RestorePoint)
     $cats = @($script:CategoryDefs | Where-Object { $Keys -contains $_.Key })
     if ($RestorePoint) { [void](New-CleanITRestorePoint 'Before cleanup') }
-    $grand = 0
+    $grand = 0; $skippedTotal = 0
+    $busy = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $details = New-Object System.Collections.Generic.List[object]
     $i = 0
     foreach ($c in $cats) {
@@ -1373,12 +1379,17 @@ function Invoke-CleanRun {
         Set-BgProgress ([int](100 * $i / [math]::Max(1, $cats.Count))) "Cleaning $($c.Name)"
         $f = [double](Invoke-CategoryClean $c | Select-Object -Last 1)
         $grand += $f
-        $details.Add([pscustomobject]@{ Key = $c.Key; Freed = $f })
+        $sk = [double]$script:LastSkippedBytes
+        $skippedTotal += $sk
+        if ($sk -gt 0) { foreach ($a in $script:LastBusyApps) { [void]$busy.Add($a) } }
+        $details.Add([pscustomobject]@{ Key = $c.Key; Freed = $f; Skipped = $sk })
         $i++
     }
     Write-Log "All done. Total freed: $(Format-Size $grand)" 'OK'
+    $busyArr = New-Object string[] $busy.Count; $busy.CopyTo($busyArr)
+    if ($skippedTotal -ge 1MB) { Write-Log ("{0} was in use and could not be removed{1}." -f (Format-Size $skippedTotal), $(if ($busy.Count) { ' - close ' + ($busyArr -join ', ') + ' and clean again' } else { ' (files open in Windows or another app)' })) 'WARN' }
     Add-HistoryEntry $Source $grand $details.ToArray()
-    [pscustomobject]@{ Freed = [double]$grand; Details = $details.ToArray() }
+    [pscustomobject]@{ Freed = [double]$grand; Skipped = [double]$skippedTotal; BusyApps = $busyArr; Details = $details.ToArray() }
 }
 
 # ---------------------------------------------------------------------------
@@ -2202,6 +2213,47 @@ function Get-WindowsSupportStatus {
         return [pscustomobject]@{ Level = 'WARN'; Text = 'Windows 11 24H2 support ends Oct 13, 2026 - install 25H2 from Windows Update.' }
     }
     [pscustomobject]@{ Level = 'OK'; Text = "Windows 11 (build $b) is in support." }
+}
+
+# Third-party antivirus (Avast, AVG, Norton...) often blocks or slows CleanIT because it is a PowerShell tool that
+# touches system areas. We can't change their settings (they protect themselves), so we detect them and explain
+# exactly how to add an exception in that product.
+$script:AvExceptionSteps = @(
+    @('Avast|AVG', 'Open {0} > Menu (top right) > Settings > General > Exceptions > Add exception. Paste each folder below and click Add exception.')
+    @('Norton', 'Open Norton > Settings > Antivirus > Scans and Risks > "Items to Exclude from Scans" > Configure > Add Folders. Add each folder below.')
+    @('McAfee', 'Open McAfee > My Protection > Real-Time Scanning > Excluded Files > Add file/folder. Add each folder below.')
+    @('Bitdefender', 'Open Bitdefender > Protection > Antivirus > Settings > Manage exceptions > + Add an exception. Add each folder below.')
+    @('Kaspersky', 'Open Kaspersky > Settings > Security settings > Threats and Exclusions > Manage exclusions > Add. Add each folder below.')
+    @('ESET', 'Open ESET > Setup > Advanced setup > Detection engine > Exclusions > Performance exclusions > Edit > Add. Add each folder below.')
+    @('Malwarebytes', 'Open Malwarebytes > Settings > Allow List > Add > Allow a file or folder. Add each folder below.')
+    @('Webroot', 'Open Webroot > PC Security > Block/Allow Files > Add File... and allow CleanIT''s files in the folders below.')
+    @('Sophos', 'Open Sophos > Settings > Exclusions (may need admin access in Sophos Central). Add each folder below.')
+    @('Trend Micro', 'Open Trend Micro > Settings (gear) > Exception Lists > Programs/folders > Add. Add each folder below.')
+)
+
+function Get-ThirdPartyAntivirus {
+    $folders = New-Object System.Collections.Generic.List[string]
+    $folders.Add($script:DataDir)
+    $here = Split-Path -Parent $script:CorePath
+    if ($here -and -not $here.Equals($script:DataDir, [StringComparison]::OrdinalIgnoreCase)) { $folders.Add($here) }
+    $products = @(Invoke-WithTimeout 'Antivirus list (Security Center)' { Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct } 15 @())
+    foreach ($p in $products) {
+        $name = [string]$p.displayName
+        if (-not $name -or $name -match 'Windows Defender|Microsoft Defender') { continue }
+        $enabled = ((($p.productState -shr 12) -band 0xF) -eq 1)
+        $steps = 'Open {0}, find its Exceptions / Exclusions / Allow list setting, and add each folder below.'
+        foreach ($s in $script:AvExceptionSteps) { if ($name -match $s[0]) { $steps = $s[1]; break } }
+        [pscustomobject]@{ Name = $name; Enabled = $enabled; Steps = ($steps -f $name); Folders = $folders.ToArray() }
+    }
+}
+
+# Messages Windows/antivirus give when they block a script - turned into something a person can act on.
+function Get-AvBlockHint {
+    param([string]$Message)
+    if ($Message -match '(?i)malicious content|blocked by your antivirus|contains a virus|potentially unwanted|virus or potentially|AMSI') {
+        return 'Your antivirus blocked this part of CleanIT. Add an exception for CleanIT''s folders (Dashboard > antivirus notice shows how) and try again.'
+    }
+    $null
 }
 
 function Get-SecurityChecks {

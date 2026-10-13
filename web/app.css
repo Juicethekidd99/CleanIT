@@ -216,3 +216,7 @@ pre.notes { white-space: pre-wrap; font: 13px/1.5 "Segoe UI", system-ui, sans-se
 /* apps winget can't check */
 .unknown-apps summary { cursor: pointer; font-weight: 600; }
 .unknown-apps[open] summary { margin-bottom: 8px; }
+
+/* antivirus notice */
+.av-banner { border-color: var(--warn); background: var(--warn-soft); }
+code.path { font: 12.5px Consolas, monospace; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; }

@@ -146,10 +146,19 @@ function render() {
   const root = h('div');
   const up = S.state.update;
   if (up && up.Available && !S.updateDismissed) root.append(updateBanner(up));
+  const av = (S.state.antivirus || []).filter(a => a.Enabled);
+  if (av.length && !S.state.settings.AvNoticeHidden) root.append(avBanner(av));
   try { p.render(root); } catch (e) { root.append(h('div', { class: 'notice warn', text: 'Something went wrong: ' + e.message })); console.error(e); }
-  const scroll = $('#page').scrollTop;
-  $('#page').replaceChildren(root);
-  $('#page').scrollTop = scroll;
+  keepScroll($('#page'), () => $('#page').replaceChildren(root));
+}
+// Re-rendering replaces the page; keep the page's scroll position AND each scrolling list's position
+// (lists scroll inside their own box, which used to jump back to the top on every tick/untick).
+function keepScroll(container, swap) {
+  const pageTop = container.scrollTop, inner = {};
+  container.querySelectorAll('[data-sk]').forEach(e => { inner[e.dataset.sk] = e.scrollTop; });
+  swap();
+  container.querySelectorAll('[data-sk]').forEach(e => { if (inner[e.dataset.sk]) e.scrollTop = inner[e.dataset.sk]; });
+  container.scrollTop = pageTop;
 }
 // Wraps an async action: marks it busy (spinner, buttons disabled), re-renders, reports errors.
 async function task(key, fn) {
@@ -275,7 +284,7 @@ function table(opts) {
     body.append(tr);
   }
   if (!rows.length) body.append(h('tr', {}, h('td', { colspan: columns.length + (sel ? 1 : 0), class: 'empty', text: empty || 'Nothing here yet.' })));
-  return h('div', { class: 'table-wrap', style: opts.height ? 'max-height:' + opts.height : null }, h('table', {}, h('thead', {}, head), body));
+  return h('div', { class: 'table-wrap', 'data-sk': opts.id || null, style: opts.height ? 'max-height:' + opts.height : null }, h('table', {}, h('thead', {}, head), body));
 }
 
 // Score ring (SVG)
@@ -405,9 +414,17 @@ async function cleanKeys(keys) {
   const rp = await restorePointChoice(); if (rp === null) return;
   await task('clean', async () => {
     const r = await run('clean', { keys, restorePoint: rp }, prog('clean'));
-    for (const d of r.Details) if (S.cache.sizes && S.cache.sizes[d.Key]) S.cache.sizes[d.Key].size = 0;
-    S.cache.junk = 0;
-    toast('Done - freed ' + fmtSize(r.Freed) + '.');
+    // what's left is what open apps were using - show that instead of pretending it's all gone
+    for (const d of r.Details) if (S.cache.sizes && S.cache.sizes[d.Key]) S.cache.sizes[d.Key].size = d.Skipped || 0;
+    S.cache.junk = r.Skipped || 0;
+    const busy = [...new Set((r.BusyApps || []).map(appName))].join(', ');
+    if (r.Skipped >= 1048576) {
+      dialog('Freed ' + fmtSize(r.Freed), [
+        h('p', { text: fmtSize(r.Skipped) + ' could not be removed because ' + (busy ? 'these apps were using those files: ' + busy + '.' : 'Windows or another program was using those files.') }),
+        h('p', { class: 'muted', text: busy ? 'Close ' + busy + ' (check the system tray by the clock too) and click Clean again to get the rest. Nothing is wrong - open apps simply lock their own cache files.'
+          : 'This is normal - some temporary files stay locked until the program using them closes or the PC restarts.' })
+      ], [{ id: 'x', text: 'OK', cls: 'primary' }]);
+    } else toast('Done - freed ' + fmtSize(r.Freed) + '.');
     loadDashboard();
   });
 }
@@ -820,7 +837,7 @@ async function findLeftovers(p) {
 async function leftoversDialog(name, hits) {
   S.sel.left = new Set();
   const wrap = h('div');
-  const draw = () => wrap.replaceChildren(
+  const draw = () => keepScroll(wrap, () => wrap.replaceChildren(
     h('p', { class: 'muted', text: 'Nothing is ticked - check each one. Folders go to the Recycle Bin; registry keys are backed up to a .reg file first. If the program is still installed, these are its live files - leave them.' }),
     table({ id: 'left', rows: hits, selKey: 'left', rowKey: x => x.Path, onSel: draw, height: '50vh',
       columns: [
@@ -828,7 +845,7 @@ async function leftoversDialog(name, hits) {
         { key: 'Path', label: 'Path', cls: 'wrap' },
         { key: 'Size', label: 'Size', cls: 'num', render: x => x.Type === 'Folder' ? fmtSize(x.Size) : '' },
         { key: 'Reason', label: 'Why', cls: 'muted small' }
-      ] }));
+      ] })));
   draw();
   const c = await dialog('Leftovers of ' + name, wrap, [{ id: 'x', text: 'Close' }, { id: 'rm', text: 'Remove ticked', cls: 'danger' }], true);
   if (c !== 'rm' || !S.sel.left.size) return;
@@ -1380,6 +1397,32 @@ function newer(a, b) {
   for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d > 0; }
   return false;
 }
+const APP_NAMES = { chrome: 'Chrome', msedge: 'Edge', firefox: 'Firefox', brave: 'Brave', opera: 'Opera', vivaldi: 'Vivaldi', librewolf: 'LibreWolf',
+  waterfox: 'Waterfox', discord: 'Discord', discordptb: 'Discord PTB', discordcanary: 'Discord Canary', spotify: 'Spotify', teams: 'Teams', 'ms-teams': 'Teams',
+  slack: 'Slack', zoom: 'Zoom', code: 'VS Code', steam: 'Steam', steamwebhelper: 'Steam', epicgameslauncher: 'Epic Games Launcher', node: 'Node.js', java: 'Java', devenv: 'Visual Studio' };
+function appName(p) { return APP_NAMES[String(p).toLowerCase()] || p; }
+
+// Third-party antivirus notice: these products often block or slow CleanIT, and only the user can add an exception.
+function avBanner(list) {
+  const names = list.map(a => a.Name).join(', ');
+  return h('div', { class: 'card update-banner av-banner' },
+    h('div', { class: 't' }, h('b', { text: names + ' may block parts of CleanIT' }),
+      h('span', { class: 'muted', text: '  -  add an exception so scans and cleaning work fully' })),
+    btn('Show me how', () => avGuide(list), 'primary'),
+    btn('Hide', () => saveSettings({ AvNoticeHidden: true }).then(render), 'link'));
+}
+function avGuide(list) {
+  const folders = list[0].Folders || [];
+  const copy = text => navigator.clipboard.writeText(text).then(() => toast('Copied: ' + text), () => toast('Select the text and copy it with Ctrl+C.'));
+  return dialog('Let your antivirus allow CleanIT', [
+    h('p', { text: 'Antivirus apps like ' + list.map(a => a.Name).join(', ') + ' sometimes treat CleanIT as suspicious because it is a script that looks at system areas. They can block scans, remove files CleanIT needs, or make cleaning very slow. CleanIT cannot change their settings (they protect themselves) - this takes about a minute:' }),
+    list.map(a => h('div', { class: 'notice' }, h('b', { text: a.Name }), h('div', { text: a.Steps }))),
+    h('p', { style: 'margin-bottom:4px', text: 'Folders to add:' }),
+    folders.map(f => h('div', { class: 'row', style: 'margin:4px 0' }, h('code', { class: 'path', text: f }), btn('Copy', () => copy(f), 'link'))),
+    h('p', { class: 'muted small', text: 'Prefer not to? CleanIT still works, some scans may just be incomplete. Windows\' own Microsoft Defender works with CleanIT without any exceptions.' })
+  ], [{ id: 'x', text: 'Done', cls: 'primary' }], true);
+}
+
 function updateBanner(up) {
   return h('div', { class: 'card update-banner' },
     h('div', { class: 't' }, h('b', { text: 'CleanIT ' + up.Latest + ' is available' }), h('span', { class: 'muted', text: '  -  you have ' + up.Current })),

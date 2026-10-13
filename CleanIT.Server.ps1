@@ -83,6 +83,7 @@ function Update-ServerJobs {
         try { $out = @($j.PS.EndInvoke($j.Handle)) }
         catch {
             $msg = $_.Exception.Message; if ($_.Exception.InnerException) { $msg = $_.Exception.InnerException.Message }
+            $hint = Get-AvBlockHint $msg; if ($hint) { $msg = $hint }
             $j.Error = $msg
             Write-Log "$($j.Name) failed: $msg" 'ERROR'
         }
@@ -668,7 +669,7 @@ function Get-AppState {
     [pscustomobject]@{
         version = $script:Version; computer = $env:COMPUTERNAME; settings = $s; isAdmin = (Test-Admin)
         protection = $script:Protection; restorePointMade = $script:RestorePointMade; schedule = (Test-Schedule)
-        fleet = (Get-FleetStatus); winget = (Test-Winget); update = (Get-UpdateInfo -CacheOnly); dataDir = $script:DataDir; logDir = $script:LogDir
+        fleet = (Get-FleetStatus); winget = (Test-Winget); update = (Get-UpdateInfo -CacheOnly); antivirus = @($script:AvInfo); dataDir = $script:DataDir; logDir = $script:LogDir
         places = @($drives + $places); userProfile = $env:USERPROFILE
         categories = @($script:CategoryDefs | ForEach-Object {
             [pscustomobject]@{ key = $_.Key; name = $_.Name; description = $_.Description; group = $_.Group; default = $_.Default; deep = $_.Deep; warning = $_.Warning } })
@@ -857,6 +858,7 @@ function Invoke-Api {
                 if ($null -ne $body.ShowMicrosoft) { $s.ShowMicrosoft = [bool]$body.ShowMicrosoft }
                 if ($null -ne $body.UpdateCheck) { $s.UpdateCheck = [bool]$body.UpdateCheck }
                 if ($null -ne $body.AutoUpdate) { $s.AutoUpdate = [bool]$body.AutoUpdate }
+                if ($null -ne $body.AvNoticeHidden) { $s.AvNoticeHidden = [bool]$body.AvNoticeHidden }
                 if ($null -ne $body.WingetExclude) {
                     $s.WingetExclude = @($body.WingetExclude | Where-Object { Test-SafeId $_ '^[A-Za-z0-9][A-Za-z0-9._+\-]{0,120}$' })
                 }
@@ -936,6 +938,7 @@ function Start-CleanITServer {
     $script:SessionCookie = New-Secret
     if ((Test-Admin) -and -not $env:CLEANIT_DATADIR) { try { Protect-DataDir } catch {} }   # repairs files locked by v2.0-2.2
     $script:Protection = Test-SystemProtection
+    $script:AvInfo = @(Get-ThirdPartyAntivirus)   # cached: Security Center can be slow
     Initialize-Native
 
     $ms = New-Object IO.MemoryStream
