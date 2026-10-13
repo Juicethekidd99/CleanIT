@@ -14,6 +14,7 @@ $script:SettingsFile = Join-Path $script:DataDir 'settings.json'
 $script:TaskName       = 'CleanIT Weekly'
 $script:NotifyTaskName = 'CleanIT Notify'
 $script:OldTaskName    = 'PCCleanup Weekly'
+$script:AppUserModelId = 'Juicethekidd99.CleanIT'   # taskbar identity of the app window and shortcuts
 if (-not $script:LogDir)  { $script:LogDir = Join-Path $script:DataDir 'Logs' }
 if (-not $script:LogFile) { $script:LogFile = Join-Path $script:LogDir ('CleanIT_{0:yyyyMMdd_HHmmss}.log' -f (Get-Date)) }
 foreach ($d in @($script:DataDir, $script:StateDir, $script:BackupDir, $script:LogDir)) {
@@ -226,6 +227,7 @@ using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32.SafeHandles;
@@ -637,6 +639,116 @@ namespace CleanIT
         }
     }
 
+    // Gives the CleanIT app window (an Edge --app window) and the CleanIT shortcuts their own taskbar identity,
+    // so the taskbar and pins show CleanIT's icon and relaunch CleanIT - not Edge.
+    public static class Taskbar
+    {
+        [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IPropertyStore
+        {
+            [PreserveSig] int GetCount(out uint count);
+            [PreserveSig] int GetAt(uint index, out PropertyKey key);
+            [PreserveSig] int GetValue(ref PropertyKey key, IntPtr pv);
+            [PreserveSig] int SetValue(ref PropertyKey key, IntPtr pv);
+            [PreserveSig] int Commit();
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        private struct PropertyKey
+        {
+            public Guid fmtid;
+            public uint pid;
+            public PropertyKey(Guid g, uint p) { fmtid = g; pid = p; }
+        }
+
+        [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+        private class CShellLink { }
+
+        private static readonly Guid AppUserModel = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+        private const uint PID_RelaunchCommand = 2, PID_RelaunchIcon = 3, PID_RelaunchName = 4, PID_Id = 5;
+
+        [DllImport("shell32.dll")]
+        private static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+        [DllImport("ole32.dll")]
+        private static extern int PropVariantClear(IntPtr pv);
+        private delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumProc proc, IntPtr lParam);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int max);
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr hwnd);
+
+        private static readonly HashSet<IntPtr> tagged = new HashSet<IntPtr>();
+
+        private static void SetString(IPropertyStore store, uint pid, string value)
+        {
+            IntPtr pv = Marshal.AllocCoTaskMem(32);
+            try
+            {
+                for (int i = 0; i < 32; i += 8) Marshal.WriteInt64(pv, i, 0);
+                Marshal.WriteInt16(pv, 0, 31);                                   // VT_LPWSTR
+                Marshal.WriteIntPtr(pv, 8, Marshal.StringToCoTaskMemUni(value));
+                PropertyKey key = new PropertyKey(AppUserModel, pid);
+                store.SetValue(ref key, pv);
+            }
+            finally { PropVariantClear(pv); Marshal.FreeCoTaskMem(pv); }
+        }
+
+        // Tags visible windows whose title starts with titlePrefix and that belong to one of the given processes.
+        public static int TagWindows(string titlePrefix, int[] pids, string appId, string relaunchCommand, string iconResource, string displayName)
+        {
+            HashSet<int> allowed = new HashSet<int>(pids);
+            List<IntPtr> found = new List<IntPtr>();
+            EnumWindows(delegate(IntPtr h, IntPtr l)
+            {
+                if (!IsWindowVisible(h) || tagged.Contains(h)) return true;
+                uint pid;
+                GetWindowThreadProcessId(h, out pid);
+                if (!allowed.Contains((int)pid)) return true;
+                StringBuilder sb = new StringBuilder(256);
+                GetWindowText(h, sb, 256);
+                if (sb.ToString().StartsWith(titlePrefix, StringComparison.Ordinal)) found.Add(h);
+                return true;
+            }, IntPtr.Zero);
+            int n = 0;
+            foreach (IntPtr h in found)
+            {
+                Guid iid = typeof(IPropertyStore).GUID;
+                IPropertyStore store;
+                if (SHGetPropertyStoreForWindow(h, ref iid, out store) != 0 || store == null) continue;
+                try
+                {
+                    SetString(store, PID_RelaunchCommand, relaunchCommand);
+                    SetString(store, PID_RelaunchIcon, iconResource);
+                    SetString(store, PID_RelaunchName, displayName);
+                    SetString(store, PID_Id, appId);                              // the ID goes last
+                    tagged.Add(h);
+                    n++;
+                }
+                finally { Marshal.ReleaseComObject(store); }
+            }
+            return n;
+        }
+
+        // Stamps a .lnk with the same AppUserModelID so a pinned shortcut and the running window share one button.
+        public static void SetShortcutAppId(string lnkPath, string appId)
+        {
+            object link = new CShellLink();
+            try
+            {
+                System.Runtime.InteropServices.ComTypes.IPersistFile file = (System.Runtime.InteropServices.ComTypes.IPersistFile)link;
+                file.Load(lnkPath, 2);
+                IPropertyStore store = (IPropertyStore)link;
+                SetString(store, PID_Id, appId);
+                store.Commit();
+                file.Save(lnkPath, true);
+            }
+            finally { Marshal.ReleaseComObject(link); }
+        }
+    }
     // Draws a percentage bar in one ListView column (value = SubItem.Tag as double 0..100).
     public static class BarList
     {
@@ -2681,6 +2793,8 @@ function Install-CleanITApp {
         $lnk.Description = 'CleanIT - clean, speed up and secure this PC'
         $lnk.WorkingDirectory = $script:DataDir
         $lnk.Save()
+        # same taskbar identity as the app window -> pinned shortcut and open window share one button
+        try { Initialize-Native; [CleanIT.Taskbar]::SetShortcutAppId($t, $script:AppUserModelId) } catch { Write-Log "Could not set the shortcut's taskbar ID: $($_.Exception.Message)" 'WARN' }
     }
     Write-Log "Installed to $($script:DataDir) with Start menu and desktop shortcuts." 'OK'
 }

@@ -151,6 +151,25 @@ function Open-AppWindow {
     # Starting Edge through explorer runs it as the normal user, not as administrator.
     Start-Process explorer.exe "`"$lnkPath`""
     $script:TempLinks.Add([pscustomobject]@{ Path = $lnkPath; At = Get-Date })
+    $script:TagUntil = (Get-Date).AddSeconds(40)   # give the new window CleanIT's taskbar identity once it appears
+}
+
+# Edge app windows inherit Edge's taskbar identity (so pinning showed the Edge logo). Stamp ours on them.
+function Set-WindowIdentity {
+    if (-not $script:TagUntil -or (Get-Date) -gt $script:TagUntil) { return }
+    if ($script:LastTag -and ((Get-Date) - $script:LastTag).TotalMilliseconds -lt 900) { return }
+    $script:LastTag = Get-Date
+    try {
+        $pids = @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction Stop |
+            Where-Object { $_.CommandLine -like '*CleanIT\Window*' } | ForEach-Object { [int]$_.ProcessId })
+        if (-not $pids.Count) { return }
+        $vbs = Join-Path $script:DataDir 'CleanIT.vbs'
+        if (-not (Test-Path -LiteralPath $vbs)) { $vbs = Join-Path $script:AppDir 'CleanIT.vbs' }
+        $relaunch = "`"$env:SystemRoot\System32\wscript.exe`" `"$vbs`""
+        $n = [CleanIT.Taskbar]::TagWindows('CleanIT', [int[]]$pids, $script:AppUserModelId, $relaunch, "$($script:IconFile),0", 'CleanIT')
+        if ($n -gt 0) { $script:TagUntil = (Get-Date).AddSeconds(3) }   # keep watching briefly for extra windows
+    }
+    catch { $script:TagUntil = $null; Write-Log "Taskbar identity not set: $($_.Exception.Message)" 'WARN' }
 }
 
 function Remove-TempLinks {
@@ -826,6 +845,8 @@ function Start-CleanITServer {
     $ms = New-Object IO.MemoryStream
     (Get-CleanITIconBitmap 64).Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
     $script:FaviconBytes = $ms.ToArray()
+    $script:IconFile = Join-Path $script:DataDir 'CleanIT.ico'
+    if (-not (Test-Path -LiteralPath $script:IconFile)) { try { Save-CleanITIco $script:IconFile } catch {} }
 
     $tcp = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Loopback), 0
     $tcp.Start()
@@ -857,6 +878,7 @@ function Start-CleanITServer {
                 $lastTick = Get-Date
                 Update-ServerJobs
                 Remove-TempLinks
+                Set-WindowIdentity
                 $running = @($script:Jobs.Values | Where-Object { $_.Status -eq 'running' }).Count
                 # Window closed (no pings for a while) and nothing running -> stop. Minimized windows ping slowly, hence 3 minutes.
                 if (-not $running -and -not $env:CLEANIT_STAY -and ((Get-Date) - $script:LastPing).TotalSeconds -gt 180) {
