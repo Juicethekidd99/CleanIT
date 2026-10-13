@@ -3,7 +3,7 @@
 # every system change is reversible and its previous state is recorded under DataDir\State.
 
 $script:AppName     = 'CleanIT'
-$script:Version     = '2.3.0'
+$script:Version     = '2.4.0'
 $script:CorePath    = $PSCommandPath
 if ($env:CLEANIT_FAKE_VERSION) { $script:Version = $env:CLEANIT_FAKE_VERSION }   # updater tests only
 $script:DataDir     = $env:CLEANIT_DATADIR
@@ -1916,12 +1916,54 @@ function ConvertFrom-WingetTable {
     }
 }
 
+# Plain-English advice for updates: Important / Recommended / Optional / Automatic + a one-line reason.
+# Apps that open things from the internet are what attackers target, so their updates count as security updates.
+$script:SecurityAppPattern = '(?i)chrome|firefox|edge|brave|opera|vivaldi|librewolf|waterfox|tor\b|zoom|discord|teams|slack|skype|whatsapp|telegram|signal|' +
+    'acrobat|adobe\.reader|foxit|sumatra|pdf|7zip|7-zip|winrar|peazip|bandizip|nanazip|java|jre|jdk|temurin|corretto|openjdk|vlc|' +
+    'anydesk|teamviewer|rustdesk|parsec|realvnc|tightvnc|putty|winscp|filezilla|openssh|openssl|git\b|git\.git|node|python|' +
+    'protonvpn|proton\.vpn|nordvpn|expressvpn|wireguard|openvpn|bitwarden|keepass|1password|lastpass|dashlane|' +
+    'dotnet|vcredist|visualc|thunderbird|outlook|notepad\+\+|notepadplusplus|libreoffice|office|onedrive|dropbox|steam|epicgames'
+
+function Get-AppUpdateAdvice {
+    param([string]$Id, [string]$Name, [string]$Version)
+    if ("$Id $Name" -match '(?i)dotnet|\.net runtime|asp\.net|desktop runtime|vcredist|visual c\+\+|java|jre|jdk|temurin|corretto|openjdk|python|node\.?js') {
+        return [pscustomobject]@{ Importance = 'Recommended'; Why = 'Security fixes for a runtime that other programs on this PC rely on.' }
+    }
+    if ("$Id $Name" -match $script:SecurityAppPattern) {
+        return [pscustomobject]@{ Importance = 'Recommended'; Why = 'Security fixes - this app opens things from the internet, so keep it current.' }
+    }
+    if ($Version -eq 'Unknown') {
+        return [pscustomobject]@{ Importance = 'Optional'; Why = 'Installed version unknown - winget can''t tell if it''s really older. Usually the app updates itself.' }
+    }
+    [pscustomobject]@{ Importance = 'Optional'; Why = 'New features and bug fixes. Update when convenient.' }
+}
+
+function Get-WindowsUpdateAdvice {
+    param([string]$Title, [string]$Category, [string]$Severity, [string]$Type)
+    if ($Type -eq 'Driver') { return [pscustomobject]@{ Importance = 'Optional'; Why = 'Driver from Windows Update - fine to install, not urgent unless that device has problems.' } }
+    if ($Category -match 'Definition' -or $Title -match 'Security Intelligence|Definition Update') {
+        return [pscustomobject]@{ Importance = 'Automatic'; Why = 'Virus definitions - Windows installs these by itself several times a day. Nothing to do.' }
+    }
+    if ($Title -match '(?i)preview') { return [pscustomobject]@{ Importance = 'Optional'; Why = 'Early preview of next month''s fixes. Safe to skip - the final version comes automatically.' } }
+    if ($Category -match 'Security|Critical' -or $Severity -match 'Critical|Important' -or $Title -match '(?i)security update|cumulative update') {
+        return [pscustomobject]@{ Importance = 'Important'; Why = 'Security fixes for Windows. Install soon - a restart is usually needed.' }
+    }
+    if ($Title -match '(?i)malicious software removal|\.net|servicing stack') { return [pscustomobject]@{ Importance = 'Recommended'; Why = 'Keeps Windows and apps that use it safe and working.' } }
+    if ($Category -match 'Feature Pack|Upgrade') { return [pscustomobject]@{ Importance = 'Optional'; Why = 'New Windows version or features. Install when you have time for a longer restart.' } }
+    [pscustomobject]@{ Importance = 'Recommended'; Why = 'Bug fixes from Microsoft.' }
+}
+
 function Get-WingetUpgrades {
     $exclude = @((Get-Settings).WingetExclude)
     $lines = @(Invoke-Winget @('upgrade', '--include-unknown', '--accept-source-agreements'))
     $rows = @(ConvertFrom-WingetTable $lines)
     Set-LastCheck 'AppUpdates' @($rows | Where-Object { $exclude -notcontains $_.Id }).Count
-    foreach ($r in $rows) { $r | Add-Member -NotePropertyName Excluded -NotePropertyValue ($exclude -contains $r.Id) -PassThru }
+    foreach ($r in $rows) {
+        $adv = Get-AppUpdateAdvice $r.Id $r.Name $r.Version
+        $r | Add-Member -NotePropertyName Importance -NotePropertyValue $adv.Importance
+        $r | Add-Member -NotePropertyName Why -NotePropertyValue $adv.Why
+        $r | Add-Member -NotePropertyName Excluded -NotePropertyValue ($exclude -contains $r.Id) -PassThru
+    }
 }
 
 function Invoke-WingetUpgrade {
@@ -1952,11 +1994,16 @@ function Get-WindowsUpdateList {
     $res = $searcher.Search("IsInstalled=0 and IsHidden=0 and Type='$Type'")
     $out = foreach ($u in $res.Updates) {
         $kb = (@($u.KBArticleIDs) | ForEach-Object { "KB$_" }) -join ', '
+        # the "classification" category (Security Updates, Definition Updates...) - not the product one (Windows 11...)
+        $cat = (@($u.Categories) | Where-Object { $_.Type -eq 'UpdateClassification' } | Select-Object -First 1).Name
+        if (-not $cat) { $cat = (@($u.Categories) | Select-Object -First 1).Name }
+        $adv = Get-WindowsUpdateAdvice ([string]$u.Title) ([string]$cat) ([string]$u.MsrcSeverity) $Type
         [pscustomobject]@{
             Title = $u.Title; Id = $u.Identity.UpdateID; KB = $kb; Size = [double]$u.MaxDownloadSize
             Severity = [string]$u.MsrcSeverity; NeedsInput = [bool]$u.InstallationBehavior.CanRequestUserInput
-            Reboot = ($u.InstallationBehavior.RebootBehavior -ne 0); Category = (@($u.Categories) | Select-Object -First 1).Name
+            Reboot = ($u.InstallationBehavior.RebootBehavior -ne 0); Category = [string]$cat
             Driver = ('{0} {1}' -f $u.DriverManufacturer, $u.DriverClass).Trim()
+            Importance = $adv.Importance; Why = $adv.Why
         }
     }
     $out = @($out)
@@ -2351,27 +2398,99 @@ function Get-DriverInventory {
     } 60 @())
 }
 
-# Third-party drivers for real hardware dated over 3 years ago. Windows' own built-in drivers are never flagged.
-# Note: some makers (AMD chipset, Razer...) keep old dates even in new releases, so the UI says "worth checking", not "outdated".
+# Driver items the user marked "done" / "hide" (keys are stable per device so they stay hidden).
+function Get-HiddenDriverKeys { @(Read-JsonFile (Get-StatePath 'drivers-hidden') @()) | Where-Object { $_ } | ForEach-Object { [string]$_ } }
+
+function Set-DriverHidden {
+    param([string]$Key, [bool]$Hide)
+    $list = New-Object System.Collections.Generic.List[string]
+    foreach ($k in Get-HiddenDriverKeys) { if ($k -ne $Key) { $list.Add($k) } }
+    if ($Hide) { $list.Add($Key) }
+    Write-JsonFile (Get-StatePath 'drivers-hidden') $list.ToArray()
+}
+
+# Third-party drivers for real hardware dated over 3 years ago, each with a plain-English verdict:
+#   Recommended - worth doing (security / something you use every day)
+#   Optional    - only if you have problems with that device
+#   NotNeeded   - safe to ignore (maker's app handles it, or you don't use it)
+# Some makers (AMD chipset, Razer...) keep old dates even in brand-new releases, so age alone never means "broken".
 function Get-OutdatedDrivers {
     param($Inventory)
     if (-not $Inventory) { $Inventory = Get-DriverInventory }
-    $classes = @('DISPLAY', 'NET', 'MEDIA', 'BLUETOOTH', 'SYSTEM', 'HDC', 'SCSIADAPTER', 'USB', 'IMAGE', 'CAMERA', 'BIOMETRIC', 'MOUSE', 'KEYBOARD', 'HIDCLASS')
+    $classes = @('NET', 'MEDIA', 'BLUETOOTH', 'SYSTEM', 'HDC', 'SCSIADAPTER', 'USB', 'IMAGE', 'CAMERA', 'BIOMETRIC', 'MOUSE', 'KEYBOARD', 'HIDCLASS')
     $cutoff = (Get-Date).AddYears(-3)
+    $inUse = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' } | ForEach-Object { [string]$_.InterfaceDescription })
+    $hidden = @(Get-HiddenDriverKeys)
     $seen = @{}
+    $chipset = [ordered]@{}
+    $items = New-Object System.Collections.Generic.List[object]
     foreach ($d in $Inventory) {
         if (-not $d.Date -or $d.Provider -match '^Microsoft') { continue }
-        if ($classes -notcontains $d.Class.ToUpperInvariant()) { continue }
+        $cls = $d.Class.ToUpperInvariant()
+        if ($classes -notcontains $cls) { continue }
         if ($d.Device -match 'Virtual|Streaming|VirtualBox|VMware|Hyper-V|Remote|Parsec') { continue }
         $date = [datetime]::ParseExact($d.Date, 'yyyy-MM-dd', $null)
         if ($date -gt $cutoff) { continue }
-        $key = "$($d.Device)|$($d.Version)"
-        if ($seen.ContainsKey($key)) { continue }
-        $seen[$key] = $true
+        if ($seen.ContainsKey("$($d.Device)|$($d.Version)")) { continue }
+        $seen["$($d.Device)|$($d.Version)"] = $true
         $years = [math]::Floor(((Get-Date) - $date).TotalDays / 365)
-        [pscustomobject]@{ Device = $d.Device; Class = $d.Class; Provider = $d.Provider; Version = $d.Version; Date = $d.Date
-                           Years = $years; Link = (Get-DriverVendorLink $d.Provider $d.Device) }
+
+        # chipset pieces (PCI bus, GPIO, PSP, SMBus...) are one download from AMD or Intel - show them as one item
+        if ($cls -eq 'SYSTEM' -and $d.Provider -match 'AMD|Advanced Micro|Intel') {
+            $v = 'AMD'; if ($d.Provider -match 'Intel') { $v = 'Intel' }
+            if (-not $chipset.Contains($v)) { $chipset[$v] = New-Object System.Collections.Generic.List[object] }
+            $chipset[$v].Add($d)
+            continue
+        }
+
+        $level = 'Optional'; $why = 'Only worth updating if this device gives you trouble.'
+        $isWifi = $d.Device -match 'Wi-?Fi|Wireless|802\.11|WLAN'
+        $used = [bool](@($inUse | Where-Object { $_ -eq $d.Device }).Count)
+        switch ($cls) {
+            'NET' {
+                if ($isWifi -and $used) { $level = 'Recommended'; $why = 'You are using this Wi-Fi to get online. Newer Wi-Fi drivers fix security holes and dropped connections.' }
+                elseif ($isWifi) { $level = 'Optional'; $why = 'Wi-Fi adapter you are not using right now. Update it if you start using Wi-Fi.' }
+                elseif ($used) { $level = 'Optional'; $why = 'Your wired network connection. If it works fine, you can skip this.' }
+                else { $level = 'NotNeeded'; $why = 'You are not using this network connection.' }
+            }
+            'BLUETOOTH' {
+                if ($d.Provider -match 'Intel') { $level = 'Recommended'; $why = 'Bluetooth updates fix security holes. Intel''s free tool updates it together with Wi-Fi.' }
+                else { $why = 'Bluetooth adapter. Update it if Bluetooth devices drop out or won''t pair.' }
+            }
+            'MEDIA' {
+                if ($d.Device -match 'Audio|Sound|Speaker|Realtek|High Definition') { $why = 'Sound driver. Windows Update keeps it working - only update if you have sound problems.' }
+                else { $why = 'Only matters if you use this device (capture card, camera...). The maker''s app usually updates it.' }
+            }
+            { $_ -in @('MOUSE', 'KEYBOARD', 'HIDCLASS') } { $level = 'NotNeeded'; $why = 'Mouse/keyboard driver. The maker''s app (Razer Synapse, Logitech G HUB...) handles it - old dates are normal.' }
+            { $_ -in @('HDC', 'SCSIADAPTER') } { $why = 'Storage controller. Only update if you have disk problems - otherwise leave it alone.' }
+            'USB' { $why = 'USB controller. Only update if USB devices disconnect or misbehave.' }
+        }
+        $link = Get-DriverVendorLink $d.Provider $d.Device
+        $action = 'Search the maker''s site'
+        if ($d.Provider -match 'Intel') { $action = 'Open Intel''s update tool' } elseif ($d.Provider -match 'AMD|Advanced Micro') { $action = 'Open AMD drivers' }
+        $key = "drv|$($d.Device)"
+        $items.Add([pscustomobject]@{
+            Key = $key; Title = $d.Device; Device = $d.Device; Class = $d.Class; Provider = $d.Provider; Version = $d.Version; Date = $d.Date
+            Years = $years; Level = $level; Why = $why; Action = $action; Link = $link; Hidden = ($hidden -contains $key)
+        })
     }
+    foreach ($v in $chipset.Keys) {
+        $parts = @($chipset[$v])
+        $names = ($parts | ForEach-Object { $_.Device } | Sort-Object -Unique) -join ', '
+        $oldest = ($parts | Sort-Object Date | Select-Object -First 1)
+        $key = "chipset|$v"
+        $link = 'https://www.amd.com/en/support/download/drivers.html'; $action = 'Get AMD chipset drivers'
+        if ($v -eq 'Intel') { $link = 'https://www.intel.com/content/www/us/en/support/detect.html'; $action = 'Open Intel''s update tool' }
+        $items.Add([pscustomobject]@{
+            Key = $key; Title = "$v chipset drivers ($($parts.Count) parts)"; Device = $names; Class = 'SYSTEM'; Provider = $v; Version = ''; Date = $oldest.Date
+            Years = [math]::Floor(((Get-Date) - [datetime]::ParseExact($oldest.Date, 'yyyy-MM-dd', $null)).TotalDays / 365)
+            Level = 'Recommended'
+            Why = "Install $v's latest chipset package once - it updates all of these at once ($names). $v keeps old dates on some parts even in new packages, so after installing it, click Done."
+            Action = $action; Link = $link; Hidden = ($hidden -contains $key)
+        })
+    }
+    $order = @{ Recommended = 0; Optional = 1; NotNeeded = 2 }
+    $items | Sort-Object { $order[$_.Level] }, Title
 }
 
 function ConvertTo-NvidiaVersion {
@@ -2456,8 +2575,28 @@ function Get-BiosStatus {
     $lvl = 'OK'; $text = "BIOS $($b.SMBIOSBIOSVersion) from $date."
     if ($years -ge 3) { $lvl = 'WARN'; $text = "BIOS $($b.SMBIOSBIOSVersion) is from $date ($([math]::Floor($years)) years old). BIOS updates carry CPU security and stability fixes - check the support page for $target." }
     elseif ($years -ge 1.5) { $lvl = 'INFO'; $text = "BIOS $($b.SMBIOSBIOSVersion) is from $date. Worth checking the support page for $target once in a while." }
+    # How this maker's BIOS is updated - shown in the step-by-step guide
+    $prebuilt = $target -eq $model -and $model -ne $board
+    $maker = "$($bb.Manufacturer) $($cs.Manufacturer)"
+    $tool = 'the BIOS update tool described in your motherboard manual'
+    if ($prebuilt) {
+        if ($maker -match 'Dell') { $tool = 'Dell SupportAssist (or Dell''s support site)' }
+        elseif ($maker -match 'HP|Hewlett') { $tool = 'HP Support Assistant' }
+        elseif ($maker -match 'Lenovo') { $tool = 'Lenovo Vantage' }
+        elseif ($maker -match 'ASUS') { $tool = 'MyASUS' }
+        elseif ($maker -match 'Acer') { $tool = 'Acer Care Center' }
+        elseif ($maker -match 'Microsoft') { $tool = 'Windows Update (Surface firmware comes through it automatically)' }
+        else { $tool = 'your PC maker''s support app or website' }
+    }
+    elseif ($maker -match 'Gigabyte') { $tool = 'Q-Flash (press End during startup, or find it in the BIOS screen)' }
+    elseif ($maker -match 'ASUS') { $tool = 'EZ Flash (in the BIOS screen, under Tool)' }
+    elseif ($maker -match 'MSI|Micro-Star') { $tool = 'M-Flash (in the BIOS screen)' }
+    elseif ($maker -match 'ASRock') { $tool = 'Instant Flash (in the BIOS screen, under Tool)' }
+    $revKnown = $bb.Version -and $bb.Version -notmatch 'Default string|To be filled|^\s*$|^x\.x$'
     [pscustomobject]@{ Version = [string]$b.SMBIOSBIOSVersion; Date = $date; Years = [math]::Round($years, 1); Board = $board; Target = $target
-                       Level = $lvl; Text = $text; Link = ('https://www.bing.com/search?q=' + [uri]::EscapeDataString("$target BIOS download support")) }
+                       Level = $lvl; Text = $text; Link = ('https://www.bing.com/search?q=' + [uri]::EscapeDataString("$target BIOS download support"))
+                       Key = "bios|$($b.SMBIOSBIOSVersion)"; Prebuilt = $prebuilt; Tool = $tool
+                       Revision = $(if ($revKnown) { [string]$bb.Version } else { '' }) }
 }
 
 # Third-party driver packages kept in the Windows driver store. Older copies that no device uses can go
@@ -2514,16 +2653,17 @@ function Get-DriverReport {
         Set-BgProgress 65 'Reading the driver store'
         $packages = @(Get-DriverPackages $inv)
     }
-    $r = [pscustomobject]@{ Gpu = $gpu; Problems = $problems; Bios = $bios; Outdated = $outdated; Packages = $packages; Checked = (Get-Date).ToString('s'); Quick = [bool]$Quick }
+    $r = [pscustomobject]@{ Gpu = $gpu; Problems = $problems; Bios = $bios; Outdated = $outdated; Packages = $packages; Checked = (Get-Date).ToString('s'); Quick = [bool]$Quick
+                            HiddenKeys = @(Get-HiddenDriverKeys) }
     # summary for the dashboard / fleet
     $old = @(Read-JsonFile (Get-StatePath 'drivers'))
     $summary = [ordered]@{
         Checked = $r.Checked
-        GpuUpdates = @($gpu | Where-Object { $_.Level -eq 'WARN' -and $_.Latest } | ForEach-Object { "$($_.Name): $($_.Latest)" })
+        GpuUpdates = @($gpu | Where-Object { $_.Level -eq 'WARN' -and $_.Latest -and $r.HiddenKeys -notcontains "gpu|$($_.Name)|$($_.Latest)" } | ForEach-Object { "$($_.Name): $($_.Latest)" })
         NoGpuDriver = [bool](@($gpu | Where-Object { $_.Level -eq 'BAD' }).Count)
         Problems = @($problems | Where-Object { $_.Level -eq 'WARN' }).Count
-        BiosLevel = $(if ($bios) { $bios.Level } else { 'OK' }); BiosText = $(if ($bios) { $bios.Text } else { '' })
-        Outdated = $(if ($Quick -and $old) { [int]$old[0].Outdated } else { $outdated.Count })
+        BiosLevel = $(if ($bios -and $r.HiddenKeys -notcontains $bios.Key) { $bios.Level } else { 'OK' }); BiosText = $(if ($bios) { $bios.Text } else { '' })
+        Outdated = $(if ($Quick -and $old) { [int]$old[0].Outdated } else { @($outdated | Where-Object { $_.Level -eq 'Recommended' -and -not $_.Hidden }).Count })
         OldPackageBytes = $(if ($Quick -and $old) { [double]$old[0].OldPackageBytes } else { [double](($packages | Where-Object { $_.Removable } | Measure-Object Size -Sum).Sum) })
     }
     Write-JsonFile (Get-StatePath 'drivers') ([pscustomobject]$summary)
@@ -2693,6 +2833,7 @@ function Get-DashboardData {
         foreach ($u in @($drv.GpuUpdates)) { if ($u) { & $add 5 'WARN' "New graphics driver available - $u" 'Drivers' } }
         if ([int]$drv.Problems -gt 0) { & $add 5 'WARN' "$($drv.Problems) device(s) not working properly (Device Manager errors)" 'Drivers' }
         if ($drv.BiosLevel -eq 'WARN') { & $add 2 'INFO' 'BIOS is over 3 years old - check for an update' 'Drivers' }
+        if ([int]$drv.Outdated -gt 0) { & $add 3 'INFO' ("{0} recommended driver update(s) - see the Drivers to-do list" -f $drv.Outdated) 'Drivers' }
         if ([double]$drv.OldPackageBytes -gt 200MB) { & $add 0 'INFO' ("{0} of old driver packages can be removed" -f (Format-Size $drv.OldPackageBytes)) 'Drivers' }
     }
     else { & $add 2 'INFO' 'Drivers not checked yet' 'Drivers' }

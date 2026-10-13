@@ -487,6 +487,15 @@ $script:Actions = @{
             $r
         } }
 
+    driverHide = @{ Name = 'Saving'
+        Prep = {
+            param($A)
+            $k = [string]$A.key
+            if ($k -notmatch '^(drv|chipset|gpu|bios)\|.{1,200}$') { throw 'Invalid item.' }
+            @{ Key = $k; Hide = [bool]$A.hide }
+        }
+        Work = { param($P) Set-DriverHidden $P.Key $P.Hide } }
+
     driverPackagesRemove = @{ Name = 'Removing old driver packages'
         Prep = {
             param($A)

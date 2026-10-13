@@ -711,6 +711,72 @@ async function leftoversDialog(name, hits) {
 }
 
 // ----- Drivers
+const DRV_LEVEL = { Recommended: ['WARN', 'Recommended'], Optional: ['INFO', 'Optional'], NotNeeded: ['OK', 'Not needed'] };
+
+// Builds the plain-English "what to do" list from the driver report.
+function driverTodos(r) {
+  const hidden = new Set(r.HiddenKeys || []);
+  const todo = [];
+  for (const g of r.Gpu || []) {
+    if (g.Level === 'BAD') todo.push({ keys: ['gpu|' + g.Name + '|none'], title: 'Install a graphics driver', why: g.Text, act: g.Page ? ['Get the driver', g.Page] : null });
+    else if (g.Level === 'WARN' && g.Latest) todo.push({ keys: ['gpu|' + g.Name + '|' + g.Latest], title: 'Update your ' + g.Vendor + ' graphics driver (' + g.Installed + ' \u2192 ' + g.Latest + ')',
+      why: 'Fixes and performance improvements for games, straight from ' + g.Vendor + '. Download it, run it, and pick the "Express" option. Takes about 5 minutes - the screen may go black for a moment.',
+      act: g.Download ? ['Download from ' + g.Vendor, g.Download] : ['Open ' + g.Vendor, g.Page] });
+    else if (g.Level === 'WARN') todo.push({ keys: ['gpu|' + g.Name + '|' + g.Installed], title: 'Check your ' + g.Vendor + ' graphics driver', why: g.Text, act: g.Page ? ['Open ' + g.Vendor + ' drivers', g.Page] : null });
+  }
+  const broken = (r.Problems || []).filter(p => p.Level === 'WARN');
+  if (broken.length) todo.push({ keys: [], title: 'Fix ' + broken.length + ' device' + (broken.length > 1 ? 's' : '') + ' that ' + (broken.length > 1 ? 'are' : 'is') + ' not working',
+    why: broken.map(p => p.Problem).join('; ') + '. Use "Search driver" in the Devices section below.', act: null });
+  // Recommended drivers - items that use the same tool (e.g. Intel Wi-Fi + Bluetooth) become one step
+  const byLink = {};
+  for (const o of (r.Outdated || []).filter(o => o.Level === 'Recommended')) {
+    const k = o.Link;
+    if (!byLink[k]) byLink[k] = { keys: [], names: [], whys: [], act: [o.Action, o.Link], provider: o.Provider, chipset: o.Key.startsWith('chipset|') };
+    byLink[k].keys.push(o.Key); byLink[k].names.push(o.Title); byLink[k].whys.push(o.Why);
+  }
+  for (const g of Object.values(byLink)) {
+    let title;
+    if (g.chipset) title = 'Install the latest ' + g.provider + ' chipset drivers';
+    else if (/intel/i.test(g.provider) && g.names.length > 1) title = 'Update Intel ' + g.names.map(n => /wi-?fi|wireless|802/i.test(n) && !/bluetooth/i.test(n) ? 'Wi-Fi' : /bluetooth/i.test(n) ? 'Bluetooth' : n).filter((v, i, a) => a.indexOf(v) === i).join(' and ') + ' drivers';
+    else title = 'Update ' + g.names.join(', ');
+    let why = g.whys[0];
+    if (/intel/i.test(g.provider) && !g.chipset) why = (g.names.length > 1 ? 'Covers: ' + g.names.join(', ') + '. ' : '') + 'Intel\'s free Driver & Support Assistant finds and installs the right versions for you. ' + g.whys[0];
+    todo.push({ keys: g.keys, title, why, act: g.act });
+  }
+  if (r.Bios && r.Bios.Level === 'WARN') todo.push({ keys: [r.Bios.Key], title: 'Update your BIOS (carefully)',
+    why: 'Your BIOS (' + r.Bios.Version + ') is ' + Math.floor(r.Bios.Years) + ' years old. Updates include CPU security fixes. It takes about 10 minutes - follow the step-by-step guide.', bios: true });
+  return todo.filter(t => !t.keys.length || !t.keys.every(k => hidden.has(k)));
+}
+async function markDriverDone(keys, hide) {
+  await task('drvhide', async () => {
+    for (const key of keys) await run('driverHide', { key, hide });
+    const hk = new Set(S.cache.drivers.HiddenKeys || []);
+    keys.forEach(k => hide ? hk.add(k) : hk.delete(k));
+    S.cache.drivers.HiddenKeys = [...hk];
+    for (const o of S.cache.drivers.Outdated || []) o.Hidden = hk.has(o.Key);
+  });
+}
+function biosGuide(b) {
+  const steps = b.Prebuilt ? [
+    'Open ' + b.Tool + '.',
+    'Let it check for updates and install the BIOS (it may be called "firmware" or "system update").',
+    'Keep the PC plugged in and do not turn it off while it updates. It restarts by itself, sometimes more than once.'
+  ] : [
+    b.Revision ? 'Your board is ' + b.Target + ' revision ' + b.Revision + '. Only use BIOS files made for that revision.'
+      : 'Find your board\'s revision: it is printed on the motherboard (often near the bottom-left, e.g. "REV 1.0") and on the box. Windows cannot read it on your board. Only use BIOS files for that exact revision.',
+    'Click "Find BIOS download" below, open ' + b.Target + ' on the maker\'s own website (not another site), go to Support > BIOS, and download the newest version that is not marked "beta".',
+    'Unzip the download and copy the files to an empty USB stick.',
+    'Restart the PC and update using ' + b.Tool + '. Pick the file from the USB stick.',
+    'Do not turn off the PC or press anything until it finishes and restarts by itself (5-10 minutes, it may restart more than once).',
+    'Afterwards all BIOS settings are back to defaults. If you had turned on XMP/EXPO for your memory speed, turn it on again.'
+  ];
+  return dialog('How to update your BIOS safely', [
+    h('p', { text: 'Your BIOS: ' + b.Version + ' from ' + b.Date + ' (' + b.Target + ').' }),
+    h('ol', { class: 'steps' }, steps.map(s => h('li', { text: s }))),
+    h('div', { class: 'notice warn', text: 'If the power goes out during the update, the PC may not start. Avoid doing it during storms or if your PC has been shutting down unexpectedly. If unsure, skip it - the PC still works fine with the old BIOS.' })
+  ], [{ id: 'x', text: 'Close' }, { id: 'web', text: 'Find BIOS download', cls: 'primary' }]).then(c => { if (c === 'web') openThing('url', { url: b.Link }); });
+}
+
 pages.drivers = {
   title: 'Drivers',
   render(root) {
@@ -727,18 +793,30 @@ pages.drivers = {
       progLine('drivers')));
     if (!r) { root.append(h('div', { class: 'empty', text: 'Checking graphics drivers, devices, BIOS and the driver store...' })); return; }
 
-    // Graphics
+    // 1) What to do - plain English, in order
+    const todo = driverTodos(r);
+    root.append(h('div', { class: 'card todo' }, h('h3', {}, 'What to do', h('small', { text: todo.length ? todo.length + ' step' + (todo.length > 1 ? 's' : '') + ', most important first' : '' })),
+      !todo.length ? h('div', { class: 'c-OK', text: 'Nothing to do - your drivers are in good shape.' }) :
+      h('ol', { class: 'todo-list' }, todo.map(t => h('li', {},
+        h('div', { class: 't' }, h('b', { text: t.title }), h('div', { class: 'muted', text: t.why })),
+        h('div', { class: 'row' },
+          t.bios ? btn('Show me how', () => biosGuide(r.Bios), 'primary') : t.act ? btn(t.act[0], () => openThing('url', { url: t.act[1] }), 'primary') : null,
+          t.keys.length ? btn('Done', () => markDriverDone(t.keys, true), 'link', 'drvhide') : null)))),
+      (() => {
+        const skip = (r.Outdated || []).filter(o => o.Level !== 'Recommended' && !o.Hidden);
+        return skip.length ? h('p', { class: 'muted small', text: 'No need to do anything for: ' + skip.map(o => o.Title + (o.Level === 'NotNeeded' ? '' : ' (only if it gives you trouble)')).join(', ') + '.' }) : null;
+      })()));
+
+    // 2) Graphics
     root.append(h('div', { class: 'card' }, h('h3', {}, 'Graphics'),
       !r.Gpu.length ? h('div', { class: 'muted', text: 'No graphics card found.' }) :
       r.Gpu.map(g => h('div', { class: 'opt' },
         h('span', { class: 'pill ' + g.Level, text: g.Level === 'OK' ? 'Up to date' : g.Level === 'WARN' ? 'Update' : g.Level === 'BAD' ? 'Missing' : 'Check' }),
-        h('div', { class: 't' }, h('b', { text: g.Name }),
-          h('div', { text: g.Text }),
+        h('div', { class: 't' }, h('b', { text: g.Name }), h('div', { text: g.Text }),
           h('div', { text: 'Installed ' + (g.Installed || '?') + (g.Date ? ' (' + g.Date + ')' : '') + (g.Latest ? '  -  latest ' + g.Latest : '') })),
-        g.Download && g.Level === 'WARN' ? btn('Download from NVIDIA', () => openThing('url', { url: g.Download }), 'primary') : null,
-        g.Page ? btn(g.Vendor + ' drivers page', () => openThing('url', { url: g.Page })) : null))));
+        g.Page ? btn(g.Vendor + ' drivers page', () => openThing('url', { url: g.Page }), 'link') : null))));
 
-    // Problem devices
+    // 3) Devices
     const probs = r.Problems || [];
     root.append(h('div', { class: 'card' }, h('h3', {}, 'Devices', h('small', { text: probs.length ? probs.length + ' with problems' : 'all working' })),
       !probs.length ? h('div', { class: 'c-OK', text: 'Every device has a working driver.' }) :
@@ -746,35 +824,35 @@ pages.drivers = {
         h('div', { class: 't' }, h('b', { text: p.Name }), h('div', { text: p.Problem + (p.HardwareId ? '  -  ' + p.HardwareId : '') })),
         p.HardwareId ? btn('Search driver', () => openThing('url', { url: p.Link }), 'link') : null))));
 
-    // BIOS
+    // 4) BIOS
     if (r.Bios) root.append(h('div', { class: 'card' }, h('h3', {}, 'BIOS / firmware'),
       h('div', { class: 'opt' }, h('span', { class: 'pill ' + r.Bios.Level, text: r.Bios.Level === 'OK' ? 'Recent' : 'Check' }),
         h('div', { class: 't' }, h('b', { text: r.Bios.Target + '  -  BIOS ' + r.Bios.Version }), h('div', { text: r.Bios.Text })),
-        btn('Find BIOS updates', () => openThing('url', { url: r.Bios.Link }), 'link')),
-      h('p', { class: 'muted small', text: 'CleanIT never flashes a BIOS. Only update from your motherboard or PC maker\'s own site and follow their steps exactly - a failed BIOS update can stop a PC from starting.' })));
+        btn('How to update safely', () => biosGuide(r.Bios), 'link'))));
 
-    // Old third-party drivers
-    const old = r.Outdated || [];
-    root.append(h('div', { class: 'card' }, h('h3', {}, 'Older drivers worth checking', h('small', { text: old.length + ' dated over 3 years ago' })),
-      h('p', { class: 'muted small', text: 'An old date does not always mean an update exists (some makers keep old dates), but these are worth a look on the maker\'s site. Windows\' own built-in drivers are not listed.' }),
-      old.length ? table({ id: 'olddrv', rows: old, rowKey: d => d.Device + d.Version, height: '320px',
+    // 5) All older drivers, sorted by what matters
+    const all = r.Outdated || [];
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Older drivers', h('small', { text: all.length + ' dated over 3 years ago' })),
+      h('p', { class: 'muted small', text: 'An old date does not always mean an update exists - some makers keep old dates even on new versions. "Recommended" ones are in the to-do list above.' }),
+      all.length ? table({ id: 'olddrv', rows: all, rowKey: d => d.Key, height: '360px', rowClass: d => d.Hidden ? 'muted' : '',
         columns: [
-          { key: 'Device', label: 'Device', render: d => h('b', { text: d.Device }) },
-          { key: 'Provider', label: 'Maker' },
-          { key: 'Version', label: 'Version', cls: 'muted' },
-          { key: 'Date', label: 'Driver date', render: d => d.Date + ' (' + d.Years + ' y)' },
-          { key: 'x', label: '', nosort: true, render: d => btn('Check for update', () => openThing('url', { url: d.Link }), 'link') }
+          { key: 'Level', label: 'Advice', sort: d => ({ Recommended: 0, Optional: 1, NotNeeded: 2 }[d.Level]), render: d => h('span', { class: 'pill ' + DRV_LEVEL[d.Level][0], text: d.Hidden ? 'Done' : DRV_LEVEL[d.Level][1] }) },
+          { key: 'Title', label: 'Driver', render: d => h('div', {}, h('b', { text: d.Title }), h('div', { class: 'small muted', text: d.Why })), cls: 'wrap' },
+          { key: 'Date', label: 'Date', render: d => d.Date + ' (' + d.Years + ' y)' },
+          { key: 'x', label: '', nosort: true, render: d => h('div', { class: 'row', style: 'flex-wrap:nowrap' },
+              btn(d.Action, () => openThing('url', { url: d.Link }), 'link'),
+              btn(d.Hidden ? 'Show again' : 'Hide', () => markDriverDone([d.Key], !d.Hidden), 'link', 'drvhide')) }
         ] }) : h('div', { class: 'c-OK', text: 'No old third-party drivers.' })));
 
-    // Driver store cleanup
+    // 6) Driver store cleanup
     const pk = r.Packages || [];
     const rem = pk.filter(p => p.Removable);
     const sel = S.sel.drvpk = S.sel.drvpk || new Set();
     const sum = rem.filter(p => sel.has(p.Published)).reduce((a, p) => a + p.Size, 0);
-    root.append(h('div', { class: 'card' }, h('h3', {}, 'Old driver packages', h('small', { text: pk.length ? rem.length + ' removable, ' + fmtSize(rem.reduce((a, p) => a + p.Size, 0)) : '' })),
-      h('p', { class: 'muted small', text: 'Windows keeps a copy of every driver version ever installed. CleanIT only offers older versions that no device uses and that have a newer version installed; Windows itself refuses to remove anything still in use. You lose "roll back driver" for those old versions.' }),
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Old driver copies', h('small', { text: pk.length ? rem.length + ' removable, ' + fmtSize(rem.reduce((a, p) => a + p.Size, 0)) : '' })),
+      h('p', { class: 'muted small', text: 'Optional clean-up. Windows keeps a copy of every driver version ever installed. CleanIT only offers older copies that no device uses and that have a newer version installed; Windows itself refuses to remove anything still in use. You lose "roll back driver" for those old versions.' }),
       !pk.length ? h('div', { class: 'muted', text: 'Needs administrator rights to read the driver store.' }) :
-      !rem.length ? h('div', { class: 'c-OK', text: 'No old driver packages - nothing to clean.' }) : [
+      !rem.length ? h('div', { class: 'c-OK', text: 'No old driver copies - nothing to clean.' }) : [
         h('div', { class: 'row', style: 'margin-bottom:10px' },
           btn('Tick all', () => { rem.forEach(p => sel.add(p.Published)); render(); }),
           h('span', { class: 'spacer' }), sel.size ? h('b', { text: sel.size + ' ticked (' + fmtSize(sum) + ')' }) : null,
@@ -794,17 +872,24 @@ function loadDrivers() { return task('drivers', async () => { S.cache.drivers = 
 async function removeDriverPackages() {
   const names = [...S.sel.drvpk];
   const list = S.cache.drivers.Packages.filter(p => names.includes(p.Published));
-  if (!await confirmBox('Remove ' + names.length + ' old driver package(s)?', [bullets(list.map(p => p.Name + ' ' + p.Version + ' (' + p.Provider + ', ' + fmtSize(p.Size) + ')'), 15),
+  if (!await confirmBox('Remove ' + names.length + ' old driver cop' + (names.length > 1 ? 'ies' : 'y') + '?', [bullets(list.map(p => p.Name + ' ' + p.Version + ' (' + p.Provider + ', ' + fmtSize(p.Size) + ')'), 15),
     h('p', { class: 'muted', text: 'Only unused older versions. The current drivers stay. Windows refuses anything still in use.' })], 'Remove', true)) return;
   const rp = await restorePointChoice(); if (rp === null) return;
-  await task('drvpk', async () => { const r = await run('driverPackagesRemove', { names, restorePoint: rp }, prog('drvpk')); toast(r.removed.length + ' old driver package(s) removed.'); });
+  await task('drvpk', async () => { const r = await run('driverPackagesRemove', { names, restorePoint: rp }, prog('drvpk')); toast(r.removed.length + ' old driver cop' + (r.removed.length === 1 ? 'y' : 'ies') + ' removed.'); });
   loadDrivers();
 }
 
 // ----- Updates
+const IMP = { Important: ['BAD', 'Important'], Recommended: ['WARN', 'Recommended'], Optional: ['INFO', 'Optional'], Automatic: ['OK', 'Automatic'] };
+const IMP_ORDER = { Important: 0, Recommended: 1, Optional: 2, Automatic: 3 };
+function impPill(i) { const v = IMP[i] || IMP.Optional; return h('span', { class: 'pill ' + v[0], text: v[1] }); }
 pages.updates = {
   title: 'Updates',
   render(root) {
+    root.append(h('div', { class: 'notice small' },
+      h('b', { text: 'Which ones do I need? ' }),
+      'CleanIT ticks the ones worth installing for you. ', impPill('Important'), ' install today  ', impPill('Recommended'), ' install soon  ',
+      impPill('Optional'), ' only if you want  ', impPill('Automatic'), ' Windows does it for you.'));
     root.append(tabs('upd', [['apps', 'Apps (winget)'], ['win', 'Windows Update'], ['drv', 'Drivers']]));
     const t = curTab('upd', 'apps');
     if (t === 'apps') updApps(root); else updWindows(root, t === 'drv' ? 'Driver' : 'Software');
@@ -815,8 +900,12 @@ function updApps(root) {
   if (!items && S.state.winget) autoLoad('winget', loadWinget);
   const excl = new Set(S.state.settings.WingetExclude || []);
   const sel = S.sel.winget = S.sel.winget || new Set();
+  const rec = (items || []).filter(u => u.Importance === 'Recommended' && !excl.has(u.Id)).length;
   root.append(h('div', { class: 'card' },
     !S.state.winget ? h('div', { class: 'notice warn', text: 'winget isn\'t available. Install "App Installer" from the Microsoft Store.' }) : null,
+    items ? h('p', { style: 'margin-top:0', text: !items.length ? 'All your apps are up to date.' :
+      rec ? rec + ' app update' + (rec > 1 ? 's are' : ' is') + ' recommended (security fixes). The rest are optional - new features and bug fixes.' :
+      'No security-related app updates. The ones below are optional - new features and bug fixes.' }) : null,
     h('div', { class: 'row' },
       btn(sel.size ? 'Update ' + sel.size + ' app' + (sel.size > 1 ? 's' : '') : 'Update ticked', async () => {
         const ids = [...sel];
@@ -824,17 +913,18 @@ function updApps(root) {
         await task('wingetUpdate', async () => { await run('wingetUpdate', { ids }, prog('wingetUpdate')); });
         loadWinget();
       }, 'primary', 'wingetUpdate', !sel.size),
+      btn('Tick all', () => { (items || []).filter(u => !excl.has(u.Id)).forEach(u => sel.add(u.Id)); render(); }, '', null, !items),
       btn('Check again', loadWinget, '', 'winget')),
     h('p', { class: 'muted small', text: '"Never update" apps are skipped here, by the weekly task and by -Updates.' }),
     progLine('wingetUpdate')));
   if (!items) { root.append(h('div', { class: 'empty', text: S.busy.winget ? 'Checking for app updates...' : 'Click Check again.' })); return; }
-  root.append(table({ id: 'winget', rows: items, selKey: 'winget', rowKey: u => u.Id, empty: 'All apps are up to date.', height: 'calc(100vh - 320px)',
-    rowClass: u => excl.has(u.Id) ? 'muted' : '',
+  root.append(table({ id: 'winget', rows: items.slice().sort((a, b) => IMP_ORDER[a.Importance] - IMP_ORDER[b.Importance] || a.Name.localeCompare(b.Name)),
+    selKey: 'winget', rowKey: u => u.Id, empty: 'All apps are up to date.', height: 'calc(100vh - 380px)', rowClass: u => excl.has(u.Id) ? 'muted' : '',
     columns: [
-      { key: 'Name', label: 'App', render: u => h('b', { text: u.Name }) },
-      { key: 'Id', label: 'Id', cls: 'muted' },
-      { key: 'Version', label: 'Installed' },
-      { key: 'Available', label: 'Available', render: u => h('span', { class: 'pill accent', text: u.Available }) },
+      { key: 'Importance', label: 'Advice', sort: u => IMP_ORDER[u.Importance], render: u => excl.has(u.Id) ? h('span', { class: 'pill INFO', text: 'Never update' }) : impPill(u.Importance) },
+      { key: 'Name', label: 'App', cls: 'wrap', render: u => h('div', {}, h('b', { text: u.Name }), h('div', { class: 'small muted', text: u.Why })) },
+      { key: 'Version', label: 'You have' },
+      { key: 'Available', label: 'New', render: u => h('span', { class: 'pill accent', text: u.Available }) },
       { key: 'x', label: '', nosort: true, render: u => btn(excl.has(u.Id) ? 'Allow updates' : 'Never update', async () => {
           if (excl.has(u.Id)) excl.delete(u.Id); else { excl.add(u.Id); sel.delete(u.Id); }
           await saveSettings({ WingetExclude: [...excl] }); render();
@@ -845,15 +935,29 @@ function loadWinget() {
   return task('winget', async () => {
     S.cache.winget = (await run('wingetList')).items;
     const excl = new Set(S.state.settings.WingetExclude || []);
-    S.sel.winget = new Set(S.cache.winget.filter(u => !excl.has(u.Id)).map(u => u.Id));
+    // pre-tick only the updates that matter
+    S.sel.winget = new Set(S.cache.winget.filter(u => !excl.has(u.Id) && u.Importance === 'Recommended').map(u => u.Id));
   });
 }
 function updWindows(root, type) {
   const key = 'wu' + type, items = S.cache[key];
   const sel = S.sel[key] = S.sel[key] || new Set();
-  const load = () => task(key, async () => { S.cache[key] = (await run('wuList', { type }, prog(key))).items; S.sel[key] = new Set(S.cache[key].filter(u => !u.NeedsInput).map(u => u.Id)); });
+  const load = () => task(key, async () => {
+    S.cache[key] = (await run('wuList', { type }, prog(key))).items;
+    S.sel[key] = new Set(S.cache[key].filter(u => !u.NeedsInput && (u.Importance === 'Important' || u.Importance === 'Recommended')).map(u => u.Id));
+  });
   if (!items && !S.busy[key] && !S.cache[key + 'Tried']) { S.cache[key + 'Tried'] = true; setTimeout(load); }
+  const imp = (items || []).filter(u => u.Importance === 'Important').length;
+  let summary = null;
+  if (items) {
+    if (!items.length) summary = type === 'Driver' ? 'No driver updates from Windows Update.' : 'Windows is up to date.';
+    else if (type === 'Driver') summary = 'Driver updates from Windows Update are optional - install them only if a device has problems. Your graphics driver is better updated from the Drivers page.';
+    else if (imp) summary = imp + ' important security update' + (imp > 1 ? 's' : '') + ' - install today. A restart will probably be needed.';
+    else if (items.every(u => u.Importance === 'Automatic')) summary = 'Only automatic updates are waiting - Windows installs these by itself. Nothing to do.';
+    else summary = 'No urgent updates. The ticked ones are worth installing when convenient.';
+  }
   root.append(h('div', { class: 'card' },
+    summary ? h('p', { style: 'margin-top:0', text: summary }) : null,
     h('div', { class: 'row' },
       btn(sel.size ? 'Install ' + sel.size + ' update' + (sel.size > 1 ? 's' : '') : 'Install ticked', async () => {
         const ids = [...sel];
@@ -863,13 +967,16 @@ function updWindows(root, type) {
       }, 'primary', key + 'Install', !sel.size),
       btn('Check again', load, '', key),
       btn('Open Windows Update', () => openThing('url', { url: 'ms-settings:windowsupdate' }), 'link')),
-    h('p', { class: 'muted small', text: type === 'Driver' ? 'Official drivers published through Windows Update. GPU makers (NVIDIA/AMD/Intel) usually have newer ones in their own app.' : 'Security and quality updates from Microsoft.' }),
     progLine(key) || progLine(key + 'Install')));
   if (!items) { root.append(h('div', { class: 'empty', text: S.busy[key] ? 'Searching Windows Update (can take a few minutes)...' : 'Click Check again.' })); return; }
-  const cols = [{ key: 'Title', label: 'Update', cls: 'wrap', render: u => h('div', {}, h('b', { text: u.Title }), u.NeedsInput ? h('div', { class: 'small c-WARN', text: 'Install this one from Windows Settings' }) : null) }];
-  if (type === 'Driver') cols.push({ key: 'Driver', label: 'Maker / class' }); else cols.push({ key: 'KB', label: 'KB' }, { key: 'Severity', label: 'Severity' });
-  cols.push({ key: 'Size', label: 'Size', cls: 'num', descFirst: true, render: u => fmtSize(u.Size) }, { key: 'Reboot', label: 'Restart', render: u => u.Reboot ? 'yes' : 'no' });
-  root.append(table({ id: key, rows: items, selKey: key, rowKey: u => u.Id, columns: cols, empty: 'No updates available.', height: 'calc(100vh - 320px)' }));
+  root.append(table({ id: key, rows: items.slice().sort((a, b) => IMP_ORDER[a.Importance] - IMP_ORDER[b.Importance]), selKey: key, rowKey: u => u.Id, empty: 'No updates available.', height: 'calc(100vh - 380px)',
+    columns: [
+      { key: 'Importance', label: 'Advice', sort: u => IMP_ORDER[u.Importance], render: u => impPill(u.Importance) },
+      { key: 'Title', label: type === 'Driver' ? 'Driver update' : 'Update', cls: 'wrap', render: u => h('div', {}, h('b', { text: u.Title }),
+          h('div', { class: 'small muted', text: u.NeedsInput ? 'Install this one from Windows Settings (it needs you to click through it).' : u.Why })) },
+      { key: 'Size', label: 'Size', cls: 'num', descFirst: true, render: u => fmtSize(u.Size) },
+      { key: 'Reboot', label: 'Restart', render: u => u.Reboot ? 'yes' : 'no' }
+    ] }));
 }
 
 // ----- Privacy

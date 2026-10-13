@@ -3,7 +3,7 @@
 A transparent, no-snake-oil replacement for Avast Cleanup Premium / CCleaner for Windows 10/11.
 Two PowerShell files, no install required, no ads, no telemetry, everything logged and reversible.
 
-> **Status: beta (v2.3.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
+> **Status: beta (v2.4.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
 > uninstall leftovers, services, privacy changes) and the weekly task are new - leave "create a restore point"
 > switched on (default) and review every list before you click. Use at your own risk; see LICENSE.
 
@@ -47,8 +47,8 @@ If Windows blocks the downloaded files: right-click each > Properties > tick **U
 | Disk | Space analyzer with drill-down and size bars; large-file finder ("not used in N days"); duplicate finder (SHA-256, hard-link aware). Files only ever go to the Recycle Bin, one tick at a time |
 | Startup | Run keys, Startup folders, logon/boot scheduled tasks, auto-start services. Publisher + signature check (unsigned = orange). Undo all |
 | Apps | Bloatware remover (curated recommended list, hard blocklist for system parts, optional de-provisioning, reinstall via Store link). Uninstaller that finds leftover folders/registry keys afterwards |
-| Drivers | GPU driver vs. the latest official NVIDIA driver (straight from NVIDIA), broken devices explained, BIOS age, older third-party drivers with official links, and removal of old unused driver packages. Never a third-party driver database |
-| Updates | App updates via winget (with "never update" list), Windows updates and official driver updates via the Windows Update API |
+| Drivers | A plain-English **What to do** checklist (most important first, with Done buttons), a step-by-step BIOS guide for your board, GPU driver vs. the latest official NVIDIA driver (straight from NVIDIA), broken devices explained, BIOS age, older third-party drivers with official links, and removal of old unused driver packages. Never a third-party driver database |
+| Updates | Every update labelled Important / Recommended / Optional / Automatic with a one-line reason; only the ones worth installing are pre-ticked. App updates via winget (with "never update" list), Windows updates and official driver updates via the Windows Update API |
 | Privacy | 23 toggles (ads, tips, telemetry, Bing in Start, Recall, Copilot...). Original values saved; "Restore everything" button |
 | Security | Antivirus, Defender signatures/scan age/tamper protection, threats, firewall, UAC, SmartScreen, Secure Boot, TPM, HVCI, BitLocker, SMBv1, Guest, RDP, Windows support status, outdated apps |
 | Health | SMART health + SSD wear/temperature, battery wear, blue screens / unexpected shutdowns / app crashes (30 days), GPU driver age, Optimize drives, Repair Windows (DISM + SFC), battery report, DNS flush |
