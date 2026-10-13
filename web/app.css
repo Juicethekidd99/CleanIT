@@ -220,3 +220,12 @@ pre.notes { white-space: pre-wrap; font: 13px/1.5 "Segoe UI", system-ui, sans-se
 /* antivirus notice */
 .av-banner { border-color: var(--warn); background: var(--warn-soft); }
 code.path { font: 12.5px Consolas, monospace; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; }
+
+/* Protect page */
+.protect-hero { display: flex; gap: 18px; align-items: flex-start; }
+.protect-hero .shield { width: 64px; height: 64px; flex: none; border-radius: 16px; display: flex; align-items: center; justify-content: center; }
+.protect-hero .shield svg { width: 38px; height: 38px; }
+.protect-hero .shield.ok { background: var(--ok-soft); color: var(--ok); }
+.protect-hero .shield.bad { background: var(--bad-soft); color: var(--bad); }
+.protect-hero .row { flex-wrap: wrap; }
+.opt .t div.c-WARN { color: var(--warn); }

@@ -55,6 +55,7 @@ param(
     [switch]$Optimize,
     [switch]$Repair,
     [switch]$QuickScan,
+    [switch]$FullScan,
     [switch]$LargeFiles,
     [switch]$Duplicates,
     [string]$Path = $env:USERPROFILE,
@@ -81,7 +82,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 $script:SelfPath     = $MyInvocation.MyCommand.Path
 $script:AppDir       = Split-Path -Parent $script:SelfPath
 $script:IsDotSourced = $MyInvocation.InvocationName -eq '.'
-$cliSwitches = @('Scan', 'Clean', 'Updates', 'WindowsUpdates', 'Drivers', 'DriverCheck', 'Update', 'Report', 'Security', 'Optimize', 'Repair', 'QuickScan',
+$cliSwitches = @('Scan', 'Clean', 'Updates', 'WindowsUpdates', 'Drivers', 'DriverCheck', 'Update', 'Report', 'Security', 'Optimize', 'Repair', 'QuickScan', 'FullScan',
                  'LargeFiles', 'Duplicates', 'Privacy', 'UndoPrivacy', 'UndoStartup', 'ListCategories', 'ListBloat',
                  'InstallSchedule', 'RemoveSchedule', 'Install', 'Uninstall', 'Fleet')
 $script:IsCli = @($cliSwitches | Where-Object { $PSBoundParameters[$_] }).Count -gt 0
@@ -203,6 +204,7 @@ if ($Drivers)        { Install-WindowsUpdates -Type Driver }
 if ($Optimize)       { Invoke-DriveOptimize }
 if ($Repair)         { Invoke-WindowsRepair }
 if ($QuickScan)      { Update-DefenderSignatures; Invoke-DefenderQuickScan }
+if ($FullScan)       { Update-DefenderSignatures; [void](Invoke-DefenderScan -Type Full) }
 if ($Report) {
     $r = Get-HealthReport
     Add-Content -Path $script:LogFile -Value $r

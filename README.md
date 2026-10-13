@@ -3,7 +3,7 @@
 A transparent, no-snake-oil replacement for Avast Cleanup Premium / CCleaner for Windows 10/11.
 Two PowerShell files, no install required, no ads, no telemetry, everything logged and reversible.
 
-> **Status: beta (v2.6.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
+> **Status: beta (v2.7.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
 > uninstall leftovers, services, privacy changes) and the weekly task are new - leave "create a restore point"
 > switched on (default) and review every list before you click. Use at your own risk; see LICENSE.
 
@@ -51,6 +51,7 @@ If Windows blocks the downloaded files: right-click each > Properties > tick **U
 | Updates | Every update labelled Important / Recommended / Optional / Automatic with a one-line reason; only the ones worth installing are pre-ticked. App updates via winget (with "never update" list), Windows updates and official driver updates via the Windows Update API |
 | Privacy | 23 toggles (ads, tips, telemetry, Bing in Start, Recall, Copilot...). Original values saved; "Restore everything" button |
 | Security | Antivirus, Defender signatures/scan age/tamper protection, threats, firewall, UAC, SmartScreen, Secure Boot, TPM, HVCI, BitLocker, SMBv1, Guest, RDP, Windows support status, outdated apps |
+| Protect | Built on Microsoft Defender (no extra antivirus engine): quick / full / Downloads / folder / offline scans, one-click extra protection (block unwanted apps, block scam and malware sites, ransomware folder protection, stronger cloud blocking - each reversible), threat history in plain English with quarantine restore, scheduled scans, Windows Sandbox to test downloads safely, home network check (Wi-Fi security, open ports, connected devices) |
 | Health | SMART health + SSD wear/temperature, battery wear, blue screens / unexpected shutdowns / app crashes (30 days), GPU driver age, Optimize drives, Repair Windows (DISM + SFC), battery report, DNS flush |
 | Fleet | Health cards for every PC (score, free space, updates, problems), one-click OneDrive setup, "Add a PC" installer |
 | Settings | Restore points, weekly schedule (day/time, optional app updates), Undo center, install shortcuts |
@@ -100,6 +101,7 @@ If Windows blocks the downloaded files: right-click each > Properties > tick **U
 .\CleanIT.ps1 -LargeFiles -Path D:\ -MinSizeMB 1000  # list only, never deletes
 .\CleanIT.ps1 -Duplicates -Path $env:USERPROFILE     # list only, never deletes
 .\CleanIT.ps1 -Optimize -Repair -QuickScan           # TRIM/defrag, DISM+SFC, Defender quick scan
+.\CleanIT.ps1 -FullScan                             # Microsoft Defender full scan (updates virus definitions first)
 .\CleanIT.ps1 -ListCategories
 .\CleanIT.ps1 -ListBloat
 .\CleanIT.ps1 -InstallSchedule                       # weekly silent clean as SYSTEM (day/time from Settings)

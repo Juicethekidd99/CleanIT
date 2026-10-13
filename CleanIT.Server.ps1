@@ -470,6 +470,67 @@ $script:Actions = @{
             }
         } }
 
+    protectStatus = @{ Name = 'Checking protection'; Work = { param($P) Get-ProtectStatus } }
+
+    protectSet = @{ Name = 'Changing Defender protection'
+        Prep = {
+            param($A)
+            $valid = @($script:ProtectSettings | ForEach-Object { $_.Key })
+            $changes = @(foreach ($c in @($A.changes)) { if ($valid -contains [string]$c.key) { [pscustomobject]@{ Key = [string]$c.key; On = [bool]$c.on } } })
+            if (-not $changes.Count) { throw 'Nothing to change.' }
+            @{ Changes = $changes; Rp = (Use-RestorePoint $A) }
+        }
+        Work = {
+            param($P)
+            if ($P.Rp) { [void](New-CleanITRestorePoint 'Before Defender changes') }
+            foreach ($c in $P.Changes) { try { Set-ProtectSetting $c.Key $c.On } catch { Write-Log "Protect: $($c.Key) - $($_.Exception.Message)" 'ERROR' } }
+            Get-ProtectStatus
+        } }
+
+    protectRestore = @{ Name = 'Restoring Defender settings'; Work = { param($P) Restore-ProtectSettings; Get-ProtectStatus } }
+
+    defScan = @{ Name = 'Microsoft Defender scan'
+        Prep = {
+            param($A)
+            $type = [string]$A.type
+            if ($type -notin @('Quick', 'Full', 'Custom', 'Downloads')) { throw 'Unknown scan type.' }
+            $path = $null
+            if ($type -eq 'Downloads') { $type = 'Custom'; $path = Get-DownloadsFolder }
+            elseif ($type -eq 'Custom') { $path = [string]$A.path; if (-not $path -or -not (Test-Path -LiteralPath $path)) { throw "Folder not found: $path" } }
+            @{ Type = $type; Path = $path }
+        }
+        Work = { param($P) Update-DefenderSignatures; Invoke-DefenderScan -Type $P.Type -Path $P.Path } }
+
+    offlineScan = @{ Name = 'Starting offline scan'; Work = { param($P) Start-OfflineScan } }
+
+    threats = @{ Name = 'Reading threat history'
+        Work = { param($P) [pscustomobject]@{ items = @(Get-ThreatHistory | Sort-Object Detected -Descending) } }
+        Finalize = {
+            param($Out)
+            $r = $Out | Select-Object -Last 1
+            $script:Cache.Quarantine = @{}
+            foreach ($x in @($r.items)) { if ($x.Quarantined) { $script:Cache.Quarantine[$x.Name] = $true } }
+            $r
+        } }
+
+    threatsRemove = @{ Name = 'Removing threats'; Work = { param($P) Remove-ActiveThreats } }
+
+    threatRestore = @{ Name = 'Restoring from quarantine'
+        Prep = { param($A) $n = [string]$A.name; if (-not ($script:Cache.Quarantine -and $script:Cache.Quarantine.ContainsKey($n))) { throw 'Not in quarantine - refresh the list.' }; @{ Name = $n } }
+        Work = { param($P) Restore-QuarantinedThreat $P.Name } }
+
+    protectSchedule = @{ Name = 'Saving scan schedule'
+        Prep = { param($A) @{ Weekly = [bool]$A.weeklyQuick; Monthly = [bool]$A.monthlyFull; AppDir = $script:AppDir } }
+        Work = { param($P) Set-ProtectSchedule -WeeklyQuick $P.Weekly -MonthlyFull $P.Monthly -SourceDir $P.AppDir; Get-ProtectSchedule } }
+
+    sandboxStatus = @{ Name = 'Checking Windows Sandbox'; Work = { param($P) Get-SandboxStatus } }
+    sandboxEnable = @{ Name = 'Turning on Windows Sandbox'; Work = { param($P) [pscustomobject]@{ restart = (Enable-Sandbox) } } }
+    sandboxOpen = @{ Name = 'Opening Windows Sandbox'
+        Work = { param($P) New-SandboxConfig }
+        Finalize = { param($Out) $w = [string]($Out | Select-Object -Last 1); if ($w) { Open-ForUser $w }; $true } }
+
+    networkCheck = @{ Name = 'Checking your network'; Work = { param($P) Get-NetworkCheck } }
+
     health = @{ Name = 'Health report'; Work = { param($P) [pscustomobject]@{ text = (Get-HealthReport) } } }
     optimize = @{ Name = 'Optimizing drives'; Work = { param($P) Invoke-DriveOptimize } }
     repair = @{ Name = 'Repairing Windows'; Work = { param($P) Invoke-WindowsRepair } }
