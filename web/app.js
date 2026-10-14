@@ -1513,20 +1513,21 @@ pages.fleet = {
     const sorted = items.slice().sort((a, b) => (b.Computer === S.state.computer) - (a.Computer === S.state.computer) || a.Computer.localeCompare(b.Computer));
     root.append(h('div', { class: 'pcs' }, sorted.map(r => {
       const me = r.Computer === S.state.computer;
+      const mac = r.Platform === 'Mac';   // reports from CleanIT for Mac (same folder, same format)
       const stale = r.Time && (Date.now() - new Date(r.Time).getTime()) > 14 * 86400000;
       const issues = (r.Issues || []).slice(0, 3);
       return h('div', { class: 'pc' + (me ? ' me' : '') },
         h('div', { class: 'top' }, ring(r.Score, 64),
-          h('div', { style: 'flex:1' }, h('h4', {}, r.Computer, me ? h('span', { class: 'pill accent', style: 'margin-left:8px', text: 'this PC' }) : null),
+          h('div', { style: 'flex:1' }, h('h4', {}, r.DisplayName || r.Computer, me ? h('span', { class: 'pill accent', style: 'margin-left:8px', text: 'this PC' }) : null),
             h('div', { class: 'small ' + (stale ? 'c-WARN' : 'muted'), text: 'Report ' + fmtAgo(r.Time) + (stale ? ' - not seen for a while' : '') }),
             h('div', { class: 'small muted', text: (r.OS || '') + (r.Build ? ' (' + r.Build + ')' : '') }),
-            h('div', { class: 'small' }, h('span', { class: 'muted', text: 'CleanIT ' + (r.Version || '?') + ' ' }),
-              S.state.update && S.state.update.Latest && r.Version && newer(S.state.update.Latest, r.Version) ? h('span', { class: 'pill WARN', text: 'update available' }) : null))),
+            h('div', { class: 'small' }, h('span', { class: 'muted', text: 'CleanIT ' + (r.Version || '?') + (mac ? ' for Mac ' : ' ') }),
+              !mac && S.state.update && S.state.update.Latest && r.Version && newer(S.state.update.Latest, r.Version) ? h('span', { class: 'pill WARN', text: 'update available' }) : null))),
         h('dl', {},
-          h('dt', { text: 'Free on C:' }), h('dd', { class: r.FreePct < 10 ? 'c-BAD' : r.FreePct < 20 ? 'c-WARN' : '', text: fmtSize(r.FreeBytes) + ' (' + r.FreePct + '%)' }),
+          h('dt', { text: mac ? 'Free on disk' : 'Free on C:' }), h('dd', { class: r.FreePct < 10 ? 'c-BAD' : r.FreePct < 20 ? 'c-WARN' : '', text: fmtSize(r.FreeBytes) + ' (' + r.FreePct + '%)' }),
           h('dt', { text: 'Freed by CleanIT' }), h('dd', { text: fmtSize(r.FreedTotal) }),
           h('dt', { text: 'Last clean' }), h('dd', { text: fmtAgo(r.LastClean) }),
-          h('dt', { text: 'Updates waiting' }), h('dd', { text: Math.max(0, r.AppUpdates) + ' apps, ' + Math.max(0, r.WinUpdates) + ' Windows' }),
+          h('dt', { text: 'Updates waiting' }), h('dd', { text: mac ? Math.max(0, r.MacUpdates) + ' macOS, ' + Math.max(0, r.AppUpdates) + ' Homebrew' : Math.max(0, r.AppUpdates) + ' apps, ' + Math.max(0, r.WinUpdates) + ' Windows' }),
           h('dt', { text: 'Restart needed' }), h('dd', { class: r.PendingReboot ? 'c-WARN' : '', text: r.PendingReboot ? 'yes' : 'no' })),
         issues.length ? h('ul', {}, issues.map(i => h('li', { text: String(i).replace(/^\[(BAD|WARN|INFO)\]\s*/, '') }))) : h('div', { class: 'small c-OK', text: 'No problems reported.' }),
         !me ? h('div', { class: 'row end' }, btn('Remove from list', async () => {

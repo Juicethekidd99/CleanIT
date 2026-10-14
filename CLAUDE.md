@@ -13,6 +13,37 @@ Commit identity for this repo is the GitHub username + noreply email - never the
 - `CleanIT.vbs` - launcher with no console window (ShellExecute runas, hidden). `Run-CleanIT.bat` just calls it.
 Roadmap: `ROADMAP.md`.
 
+## macOS version (`mac/`)
+- Swift package (`mac/Package.swift`), built into `mac/build/CleanIT.app` by `mac/build.sh` (ad-hoc signed). Bundle id
+  `io.github.juicethekidd99.cleanit`. Targets macOS 12+, Swift 5 language mode, no third-party dependencies.
+- The window is a WKWebView showing `mac/web/` (index.html, app.js, mac.css) + the shared `web/app.css` (copied in at build).
+  `mac/web/app.js` is a fork of `web/app.js`: same helpers and look; `api()` calls `window.webkit.messageHandlers.api`
+  with the same `/api/...` paths. Engine side: `Bridge.swift` (routes + actions table), `Jobs.swift` (background jobs).
+- Engine files: `Clean.swift` (categories are data, like `$script:CategoryDefs`), `Disk.swift`, `Startup.swift`,
+  `Apps.swift`, `Updates.swift`, `Health.swift` (Security, Health, Dashboard), `Schedule.swift` (weekly LaunchAgent),
+  `Fleet.swift` (same `<Computer>.json` format as Write-FleetReport + `Platform: "Mac"`, `DisplayName`, `MacUpdates`;
+  `Computer` is the LocalHostName because Remove-FleetReport only accepts `[A-Za-z0-9._-]`). The Windows fleet page
+  checks `r.Platform === 'Mac'` for its labels - keep both fleet pages compatible when changing the report.
+- Mac rules: never follow symlinks; user files, apps and leftovers go to the Trash (`trashItem` / `NSWorkspace.recycle`);
+  caches are deleted in place but the cache folder itself stays; skip caches of running apps (owner bundle id);
+  startup changes only use `launchctl disable/enable` (never edit/delete plists) and are recorded in `State/startup.json`;
+  admin actions go through `shAdmin` (macOS password prompt). Paths sent back by the page must come from the engine's
+  last results (`Disk.trashable`, `Apps.leftoverPaths`, `Startup.lastItems`).
+- `Perf.swift`: Performance page. `Perf.items` = reversible settings (`defaults` keys or `pmset -c lowpowermode` via
+  shAdmin); the original value (or null = not set) is saved once in `State/performance.json` and turning off restores it
+  exactly (null -> `defaults delete`). `Perf.checks()` is read-only. Never apply the admin (pmset) item on the dev Mac
+  without asking; test round trips on a harmless `defaults` item.
+- Cloud folders (OneDrive in ~/Library/CloudStorage) can block file calls for minutes: fleet writes run on
+  `Fleet.queue` (fire-and-forget in the app, `wait:` in the CLI), reads and the reachability check have timeouts.
+- Don't trigger permission prompts from the Dashboard/Security (login items via System Events only on the Startup page).
+- macOS version numbers jump 15 -> 26: compare positions in `releases` (Health.swift); add each autumn's release.
+- Releases: every GitHub release (vX.Y.Z, same tags as Windows) gets two extra files from `tools/release-assets.sh vX.Y.Z`:
+  `CleanIT-Windows.zip` and `CleanIT-Mac.zip` (README links use releases/latest/download/<name>). Never publish a separate
+  Mac-only release or a non-numeric tag: the Windows updater reads releases/latest and needs a `vX.Y.Z` tag.
+- Testing: `CFFIXED_USER_HOME=<fake home> CLEANIT_DATADIR=<temp> .build/release/CleanIT --clean --categories ...` against
+  a fake home containing symlinks to a "precious" folder. UI: launch with `CLEANIT_DEBUG=1` and use
+  `swift tools/debug.swift '<js>' out.png` to run JS in the page and save a snapshot. Page errors are logged as ERROR.
+
 ## Architecture notes
 - Window: Edge `--app=` window with its own profile (`%LOCALAPPDATA%\CleanIT\Window`), started through a temp .lnk
   opened by explorer.exe so it runs as the normal user, not admin. Falls back to the default browser.

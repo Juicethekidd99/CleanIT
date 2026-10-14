@@ -3,6 +3,12 @@
 A transparent, no-snake-oil replacement for Avast Cleanup Premium / CCleaner for Windows 10/11.
 Two PowerShell files, no install required, no ads, no telemetry, everything logged and reversible.
 
+## Download
+| Your computer | Download | Then |
+|---|---|---|
+| **Windows 10/11** | [CleanIT-Windows.zip](https://github.com/Juicethekidd99/CleanIT/releases/latest/download/CleanIT-Windows.zip) | see [Quick start](#quick-start) below |
+| **Mac** (macOS 12 or newer) | [CleanIT-Mac.zip](https://github.com/Juicethekidd99/CleanIT/releases/latest/download/CleanIT-Mac.zip) | see [CleanIT for Mac](mac/README.md) |
+
 > **Status: beta (v2.8.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
 > uninstall leftovers, services, privacy changes) and the weekly task are new - leave "create a restore point"
 > switched on (default) and review every list before you click. Use at your own risk; see LICENSE.
@@ -11,7 +17,7 @@ Two PowerShell files, no install required, no ads, no telemetry, everything logg
 Windows 10 or 11, Windows PowerShell 5.1 (built in), administrator rights. winget (App Installer) for app updates.
 
 ## Quick start
-1. Download the repo (Code > Download ZIP) and extract it. Keep all files and the `web` folder together.
+1. Download **CleanIT-Windows.zip** (above) and extract it. Keep all files and the `web` folder together.
 2. Double-click `CleanIT.vbs` (or `Run-CleanIT.bat`) and approve the UAC prompt.
 3. CleanIT opens in its own app window. On the **Dashboard** click **Smart Scan**, then **Clean ...**.
 4. Optional: **Settings > Install** adds Start menu + desktop shortcuts (copies to `C:\ProgramData\CleanIT`).

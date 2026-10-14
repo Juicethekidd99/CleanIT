@@ -34,6 +34,15 @@ and skip the snake oil.
 - [x] v2.5.0: Free up space assistant (safe wins, review list, move-to-other-drive guides)
 - [x] v2.4.0: plain-English guidance - Drivers to-do list, BIOS guide, Recommended/Optional/Not needed, update importance labels
 
+## macOS version (mac/)
+- [x] v0.1.0: Swift app with the shared web UI - Clean, Disk, Startup, Apps, Updates (macOS + Homebrew), Security, Health,
+      weekly clean, CLI
+- [x] Fleet: same OneDrive "CleanIT Fleet" folder and report format as Windows; Macs and PCs on one page
+- [x] Performance page (like Windows 2.8.0): speed check + reversible settings, honest "what we do not do" list
+- [ ] Self-updater from GitHub releases (zip with CleanIT.app; verify signature)
+- [ ] Developer ID signing + notarization so the download opens without warnings
+- [ ] Unavailable simulators (`xcrun simctl delete unavailable`), old iOS backups viewer, Mac App Store updates via `mas`
+
 ## Phase 4 - Packaging (next)
 - Compile to `CleanIT.exe` with PS2EXE (custom icon, requireAdmin manifest) - note: the core is dot-sourced, so either
   bundle it or inline it at build time
