@@ -26,6 +26,7 @@ and skip the snake oil.
 - [x] Drivers page: official NVIDIA latest-driver check, problem devices, BIOS age, older drivers, old driver package cleanup
 - [x] App window has CleanIT's own taskbar identity/icon
 - [x] v2.3.0: built-in updater from GitHub releases (+ optional auto-update in the weekly clean); fixed install-folder permissions
+- [x] v2.8.0: Performance page - speed check + reversible gaming settings (one-click game mode), honest "what we do not do" list
 - [x] v2.7.2: Unexpected shutdowns explained on the Health page, with "Got it" to clear the Dashboard warning
 - [x] v2.7.1: Dark mode option in Settings (Match Windows / Light / Dark)
 - [x] v2.7.0: Protect page - Avast-style controls on top of Microsoft Defender (scans, extra protection, threats, scheduled scans, Windows Sandbox, network check)

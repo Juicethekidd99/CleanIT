@@ -32,6 +32,8 @@
     .\CleanIT.ps1 -Report -Security                 # health + security report
     .\CleanIT.ps1 -Privacy                          # apply recommended privacy settings (reversible)
     .\CleanIT.ps1 -UndoPrivacy -UndoStartup         # put back everything CleanIT changed
+    .\CleanIT.ps1 -Performance                      # apply recommended performance/gaming settings (reversible)
+    .\CleanIT.ps1 -UndoPerformance                  # put performance settings back
     .\CleanIT.ps1 -LargeFiles -Path D:\ -MinSizeMB 1000
     .\CleanIT.ps1 -Duplicates -Path $env:USERPROFILE
     .\CleanIT.ps1 -Optimize -Repair -QuickScan
@@ -62,6 +64,8 @@ param(
     [int]$MinSizeMB = 0,
     [switch]$Privacy,
     [switch]$UndoPrivacy,
+    [switch]$Performance,
+    [switch]$UndoPerformance,
     [switch]$UndoStartup,
     [switch]$ListCategories,
     [switch]$ListBloat,
@@ -83,7 +87,7 @@ $script:SelfPath     = $MyInvocation.MyCommand.Path
 $script:AppDir       = Split-Path -Parent $script:SelfPath
 $script:IsDotSourced = $MyInvocation.InvocationName -eq '.'
 $cliSwitches = @('Scan', 'Clean', 'Updates', 'WindowsUpdates', 'Drivers', 'DriverCheck', 'Update', 'Report', 'Security', 'Optimize', 'Repair', 'QuickScan', 'FullScan',
-                 'LargeFiles', 'Duplicates', 'Privacy', 'UndoPrivacy', 'UndoStartup', 'ListCategories', 'ListBloat',
+                 'LargeFiles', 'Duplicates', 'Privacy', 'UndoPrivacy', 'Performance', 'UndoPerformance', 'UndoStartup', 'ListCategories', 'ListBloat',
                  'InstallSchedule', 'RemoveSchedule', 'Install', 'Uninstall', 'Fleet')
 $script:IsCli = @($cliSwitches | Where-Object { $PSBoundParameters[$_] }).Count -gt 0
 
@@ -164,6 +168,8 @@ if ($Uninstall)       { Uninstall-CleanITApp }
 if ($InstallSchedule) { Install-Schedule $script:AppDir }
 if ($RemoveSchedule)  { Remove-Schedule }
 if ($UndoPrivacy)     { Restore-AllPrivacy }
+if ($UndoPerformance) { Restore-AllPerf }
+if ($Performance)     { Set-RecommendedPerf }
 if ($UndoStartup)     { Undo-AllStartupChanges }
 
 if ($Update) {

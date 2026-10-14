@@ -38,6 +38,7 @@ const ICONS = {
   privacy: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6zM9 12l2 2 4-4',
   security: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z',
   protect: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6zM12 8v8M8 12h8',
+  speed: 'M4.6 18a9 9 0 1 1 14.8 0M12 14l4-5',
   health: 'M3 12h4l2-5 4 10 2-5h6',
   fleet: 'M3 5h8v6H3zM13 5h8v6h-8zM8 15h8v6H8zM7 11v2h10v-2M12 13v2',
   settings: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
@@ -128,7 +129,7 @@ function openThing(what, extra) { return api('/api/open', Object.assign({ what }
 const S = { page: 'dashboard', state: null, busy: {}, failed: {}, cache: {}, sel: {}, tab: {}, progress: {} };
 const pages = {};
 const NAV = [
-  ['dashboard', 'Dashboard', 'home'], ['clean', 'Clean', 'clean'], ['disk', 'Disk', 'disk'], ['startup', 'Startup', 'startup'],
+  ['dashboard', 'Dashboard', 'home'], ['clean', 'Clean', 'clean'], ['disk', 'Disk', 'disk'], ['startup', 'Startup', 'startup'], ['performance', 'Performance', 'speed'],
   ['apps', 'Apps', 'apps'], ['drivers', 'Drivers', 'chip'], ['updates', 'Updates', 'updates'], ['privacy', 'Privacy', 'privacy'], ['security', 'Security', 'security'], ['protect', 'Protect', 'protect'],
   ['health', 'Health', 'health'], ['fleet', 'Fleet', 'fleet'], ['settings', 'Settings', 'settings']
 ];
@@ -731,6 +732,79 @@ async function applyStartup() {
   if (items.some(i => i.Kind === 'Service')) { rp = await restorePointChoice(); if (rp === null) return; }
   await task('startupApply', async () => { await run('startupApply', { changes, restorePoint: rp }); toast(changes.length + ' startup change(s) applied.'); });
   await loadStartup();
+}
+
+// ----- Performance (speed + gaming). Only settings with a real effect - see "What CleanIT does not do".
+pages.performance = {
+  title: 'Performance',
+  render(root) {
+    const pf = S.cache.perf;
+    if (!pf) autoLoad('perf', loadPerf);
+    if (!pf) { root.append(h('div', { class: 'empty', text: 'Checking your PC...' })); return; }
+    const ch = S.cache.perfChanges = S.cache.perfChanges || {};
+    const isOn = s => s.Key in ch ? ch[s.Key] : s.On;
+    const rec = pf.items.filter(s => s.Recommended);
+    const recOn = rec.filter(s => s.On).length;
+    const warns = pf.checks.filter(c => c.Level === 'WARN');
+
+    // 1) Summary + one-click game mode
+    root.append(h('div', { class: 'card protect-hero' },
+      h('div', { class: 'shield ' + (recOn === rec.length && !warns.length ? 'ok' : 'warn') }, icon('speed')),
+      h('div', { style: 'flex:1' },
+        h('h2', { style: 'margin:0 0 4px', text: recOn === rec.length && !warns.length ? 'This PC is set up for speed' : 'Free speed is available' }),
+        h('div', { class: 'muted', text: recOn + ' of ' + rec.length + ' recommended settings are on' + (warns.length ? '  -  ' + warns.length + ' thing(s) to fix below' : '') + '. Every change can be undone.' }),
+        h('div', { class: 'row', style: 'margin-top:12px' },
+          btn(recOn === rec.length ? 'All recommended settings are on' : 'Turn on all recommended (game mode)', () => applyPerf(rec.filter(s => !s.On).map(s => ({ key: s.Key, on: true }))), 'primary', 'perfSet', recOn === rec.length),
+          btn('Check again', loadPerf, 'link', 'perf')))));
+
+    // 2) Findings that need a change outside CleanIT
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Speed check', h('small', { text: 'screen, memory, power and background apps' })),
+      pf.checks.map(c => h('div', { class: 'opt' },
+        h('span', { class: 'pill ' + c.Level, text: c.Level === 'OK' ? 'good' : c.Level === 'WARN' ? 'fix this' : 'info' }),
+        h('div', { class: 't' }, h('b', { text: c.Title }), h('div', { text: c.Text })),
+        c.Action ? btn(c.Action.Label, () => c.Action.Kind === 'page' ? go(c.Action.Target) : openThing('url', { url: c.Action.Target }), 'link') : null))));
+
+    // 3) Settings CleanIT can change
+    const n = Object.keys(ch).length;
+    const group = (g, title, sub) => h('div', { class: 'card' }, h('h3', {}, title, h('small', { text: sub })),
+      pf.items.filter(s => s.Group === g).map(s => h('div', { class: 'opt' },
+        toggle(isOn(s), v => { if (v === s.On) delete ch[s.Key]; else ch[s.Key] = v; render(); }),
+        h('div', { class: 't' }, h('b', { text: s.Name }), h('div', { text: s.Description }),
+          h('div', { class: 'small', text: 'Effect: ' + s.Impact + (s.Note ? '. ' + s.Note : '') })),
+        s.Recommended ? h('span', { class: 'pill accent', text: 'recommended' }) : h('span', { class: 'pill INFO', text: 'optional' }),
+        s.Restart && s.Key in ch ? h('span', { class: 'pill WARN', text: 'restart' }) : null)));
+    root.append(group('Gaming', 'Gaming', 'Windows settings that affect games'));
+    root.append(group('Windows', 'Windows speed', 'everyday responsiveness'));
+    root.append(h('div', { class: 'card sticky-action' }, h('div', { class: 'row' },
+      btn(n ? 'Apply ' + n + ' change' + (n > 1 ? 's' : '') : 'Apply', () => applyPerf(Object.entries(ch).map(([key, on]) => ({ key, on }))), 'primary', 'perfSet', !n),
+      n ? btn('Cancel', () => { S.cache.perfChanges = {}; render(); }, 'link') : null,
+      h('span', { class: 'spacer' }),
+      pf.items.some(s => s.ChangedByCleanIT) ? btn('Put everything back', async () => {
+        if (!await confirmBox('Put performance settings back?', 'Every setting CleanIT changed on this page goes back to how it was before.', 'Put back')) return;
+        await task('perfSet', async () => { S.cache.perf.items = (await run('perfRestore')).items; S.cache.perfChanges = {}; toast('Settings put back.'); });
+      }, 'link', 'perfSet') : null)));
+
+    // 4) Honesty section
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'What CleanIT does not do (and why)'),
+      bullets([
+        'No "RAM cleaner" or memory booster - Windows uses spare memory as a cache on purpose; emptying it makes things slower, not faster.',
+        'No closing your apps before games - modern PCs have plenty of memory, and Game Mode already gives the game priority.',
+        'No registry cleaner or "network/TCP tweaks" - they make no measurable difference and can break things.',
+        'No turning off Windows Defender, updates or core services for "FPS" - the gain is tiny and the risk is real.',
+        'The biggest real speed-ups are on this page: the right refresh rate, RAM at its rated speed (XMP/EXPO), fewer startup apps, an up-to-date graphics driver and enough free space.'
+      ])));
+  }
+};
+function loadPerf() { return task('perf', async () => { S.cache.perf = await run('perfStatus'); S.cache.perfChanges = {}; }); }
+async function applyPerf(changes) {
+  if (!changes.length) return;
+  const rp = await restorePointChoice(); if (rp === null) return;
+  await task('perfSet', async () => {
+    S.cache.perf.items = (await run('perfApply', { changes, restorePoint: rp }, prog('perfSet'))).items;
+    S.cache.perfChanges = {};
+    const restart = changes.some(c => (S.cache.perf.items.find(s => s.Key === c.key) || {}).Restart);
+    toast(restart ? 'Done. Restart the PC for the graphics setting to take effect.' : 'Done - settings applied.');
+  });
 }
 
 // ----- Apps
