@@ -3,7 +3,7 @@
 # every system change is reversible and its previous state is recorded under DataDir\State.
 
 $script:AppName     = 'CleanIT'
-$script:Version     = '2.7.2'
+$script:Version     = '2.8.0'
 $script:CorePath    = $PSCommandPath
 if ($env:CLEANIT_FAKE_VERSION) { $script:Version = $env:CLEANIT_FAKE_VERSION }   # updater tests only
 $script:DataDir     = $env:CLEANIT_DATADIR
@@ -775,6 +775,30 @@ namespace CleanIT
                 TextRenderer.DrawText(e.Graphics, e.SubItem.Text, lv.Font, new Rectangle(r.X + 6, r.Y, r.Width - 10, r.Height),
                     sel ? SystemColors.HighlightText : lv.ForeColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
             };
+        }
+    }
+    // Windows power mode (Settings > System > Power: Best performance / Balanced / Best power efficiency)
+    // and "Enhance pointer precision" (mouse acceleration) - the same APIs the Settings app uses.
+    public static class Perf
+    {
+        [DllImport("powrprof.dll")] static extern uint PowerGetActualOverlayScheme(out Guid g);
+        [DllImport("powrprof.dll")] static extern uint PowerSetActiveOverlayScheme(Guid g);
+        [DllImport("user32.dll", SetLastError = true)] static extern bool SystemParametersInfo(uint action, uint param, int[] data, uint winIni);
+        public static string GetPowerMode()
+        {
+            Guid g;
+            return PowerGetActualOverlayScheme(out g) == 0 ? g.ToString() : "";
+        }
+        public static bool SetPowerMode(string guid) { return PowerSetActiveOverlayScheme(new Guid(guid)) == 0; }
+        public static bool GetMouseAccel()
+        {
+            int[] m = new int[3];
+            return SystemParametersInfo(3, 0, m, 0) && m[2] != 0;   // SPI_GETMOUSE: [threshold1, threshold2, acceleration]
+        }
+        public static bool SetMouseAccel(bool on)
+        {
+            int[] m = on ? new int[] { 6, 10, 1 } : new int[] { 0, 0, 0 };   // Windows defaults when on
+            return SystemParametersInfo(4, 0, m, 3);                        // SPI_SETMOUSE, save to profile + notify apps
         }
     }
 }
@@ -2197,6 +2221,239 @@ function Set-RecommendedPrivacy {
 }
 
 # ---------------------------------------------------------------------------
+# Performance & gaming - only settings with a real, measurable effect. No RAM "cleaners", no process killers,
+# no registry/network "tweaks". Every change records the original in State\performance.json and can be undone.
+# ---------------------------------------------------------------------------
+$script:PowerModeBest = 'ded574b5-45a0-4f42-8737-46345c09c238'
+$script:PowerModeBalanced = '00000000-0000-0000-0000-000000000000'
+$script:GpuSchedKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers'
+$script:DxPrefKey = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+$script:GameDvrKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR'
+
+# Kind: Reg (Values = @(Path, Name, OnData, OffData); UnsetIsOn = what Windows does when the value is missing),
+# or a custom one handled by name (PowerMode, MouseAccel, WindowedOpt).
+function New-PerfItem {
+    param([string]$Key, [string]$Name, [string]$Group, [string]$Description, [string]$Impact, [bool]$Recommended,
+          [string]$Kind = 'Reg', [object[]]$Values = @(), [bool]$UnsetIsOn = $false, [bool]$Restart = $false, [string]$Note = '')
+    [pscustomobject]@{
+        Key = $Key; Name = $Name; Group = $Group; Description = $Description; Impact = $Impact; Recommended = $Recommended
+        Kind = $Kind; UnsetIsOn = $UnsetIsOn; Restart = $Restart; Note = $Note
+        Values = @($Values | ForEach-Object { [pscustomobject]@{ Path = $_[0]; Name = $_[1]; On = $_[2]; Off = $_[3] } })
+    }
+}
+
+$script:PerfItems = @(
+    New-PerfItem 'GameMode' 'Game Mode' 'Gaming' 'While a game runs, Windows gives it priority and holds back Windows Update installs and driver installs.' 'Small, steadier frame times' $true -Values @(
+        ,@('HKCU:\Software\Microsoft\GameBar', 'AutoGameModeEnabled', 1, 0)) -UnsetIsOn $true
+    New-PerfItem 'NoBgRecord' 'No background game recording' 'Gaming' 'Stops Xbox Game Bar from constantly recording the last few minutes of gameplay ("Record what happened"). Taking screenshots and recording clips by hand still works.' 'Noticeable on mid-range PCs (a few % FPS)' $true -Values @(
+        ,@($script:GameDvrKey, 'HistoricalCaptureEnabled', 0, 1)) -UnsetIsOn $true
+    New-PerfItem 'WindowedOpt' 'Optimizations for windowed games' 'Gaming' 'Makes windowed and borderless games run with the same low input lag as full screen, and lets them use Auto HDR and variable refresh rate (G-Sync / FreeSync).' 'Lower input lag in borderless games' $true -Kind 'WindowedOpt'
+    New-PerfItem 'GpuSched' 'Hardware-accelerated GPU scheduling' 'Gaming' 'Lets the graphics card manage its own memory queue. Needed for NVIDIA DLSS Frame Generation (RTX 40 and newer).' 'Small; required for Frame Generation' $false -Values @(
+        ,@($script:GpuSchedKey, 'HwSchMode', 2, 1)) -Restart $true -Note 'Takes effect after a restart.'
+    New-PerfItem 'MouseAccel' 'Turn off mouse acceleration' 'Gaming' 'Turns off "Enhance pointer precision", so moving the mouse the same distance always moves the same amount. Most competitive players turn it off for consistent aim.' 'Consistent aim (not FPS)' $false -Kind 'MouseAccel' -Note 'The pointer may feel slower at first - adjust the mouse sensitivity if needed.'
+    New-PerfItem 'PowerMode' 'Best performance power mode' 'Windows' 'Keeps the processor ready at full speed instead of saving power between bursts. Same as Settings > System > Power > Power mode.' 'Snappier PC, small FPS gain in CPU-heavy games' $true -Kind 'PowerMode' -Note 'Uses a bit more electricity. On a laptop it drains the battery faster.'
+)
+
+function Get-PerfSaved {
+    $h = @{}
+    $j = Read-JsonFile (Get-StatePath 'performance')
+    if ($j) { foreach ($p in $j.PSObject.Properties) { $h[$p.Name] = $p.Value } }
+    $h
+}
+
+function Get-DxGlobalSettings { [string](Get-RegValue $script:DxPrefKey 'DirectXUserGlobalSettings').Data }
+
+function Get-PerfItemOn {
+    param($Item)
+    switch ($Item.Kind) {
+        'PowerMode'   { Initialize-Native; return ([CleanIT.Perf]::GetPowerMode() -eq $script:PowerModeBest) }
+        'MouseAccel'  { Initialize-Native; return (-not [CleanIT.Perf]::GetMouseAccel()) }
+        'WindowedOpt' { return ((Get-DxGlobalSettings) -match 'SwapEffectUpgradeEnable=1;') }
+        default {
+            foreach ($v in $Item.Values) {
+                $cur = Get-RegValue $v.Path $v.Name
+                if (-not $cur.Exists) { if (-not $Item.UnsetIsOn) { return $false } }
+                elseif ([string]$cur.Data -ne [string]$v.On) { return $false }
+            }
+            return $true
+        }
+    }
+}
+
+function Get-PerfStatus {
+    $saved = Get-PerfSaved
+    $build = [int](Get-CimInstance Win32_OperatingSystem).BuildNumber
+    foreach ($it in $script:PerfItems) {
+        $on = $false
+        try { $on = [bool](Get-PerfItemOn $it) } catch { }
+        # Windows 11 turns GPU scheduling on by itself for supported cards when the value is missing
+        if ($it.Key -eq 'GpuSched' -and -not (Get-RegValue $script:GpuSchedKey 'HwSchMode').Exists) { $on = ($build -ge 22000) }
+        [pscustomobject]@{
+            Key = $it.Key; Name = $it.Name; Group = $it.Group; Description = $it.Description; Impact = $it.Impact
+            Recommended = $it.Recommended; Restart = $it.Restart; Note = $it.Note; On = $on; ChangedByCleanIT = $saved.ContainsKey($it.Key)
+        }
+    }
+}
+
+function Set-PerfItem {
+    param($Item, [bool]$On)
+    Initialize-Native
+    $saved = Get-PerfSaved
+    $k = $Item.Key
+    if ($On -and -not $saved.ContainsKey($k)) {
+        # remember how it was before CleanIT touched it (only once)
+        $orig = switch ($Item.Kind) {
+            'PowerMode'   { [pscustomobject]@{ Mode = [CleanIT.Perf]::GetPowerMode() } }
+            'MouseAccel'  { [pscustomobject]@{ Accel = [CleanIT.Perf]::GetMouseAccel() } }
+            'WindowedOpt' { $c = Get-RegValue $script:DxPrefKey 'DirectXUserGlobalSettings'; [pscustomobject]@{ Exists = $c.Exists; Data = [string]$c.Data } }
+            default { [pscustomobject]@{ Values = @($Item.Values | ForEach-Object { $c = Get-RegValue $_.Path $_.Name; [pscustomobject]@{ Path = $_.Path; Name = $_.Name; Exists = $c.Exists; Data = $c.Data; Kind = $c.Kind } }) } }
+        }
+        $saved[$k] = $orig
+    }
+    $restore = (-not $On) -and $saved.ContainsKey($k)
+    $o = $null; if ($restore) { $o = $saved[$k] }
+    switch ($Item.Kind) {
+        'PowerMode' {
+            $mode = $script:PowerModeBest
+            if (-not $On) { $mode = $script:PowerModeBalanced; if ($restore -and $o.Mode) { $mode = [string]$o.Mode } }
+            if (-not [CleanIT.Perf]::SetPowerMode($mode)) { throw 'Windows did not accept the power mode change.' }
+        }
+        'MouseAccel' {
+            $accel = -not $On
+            if ($restore) { $accel = [bool]$o.Accel }
+            if (-not [CleanIT.Perf]::SetMouseAccel($accel)) { throw 'Windows did not accept the mouse setting.' }
+        }
+        'WindowedOpt' {
+            if ($restore) {
+                if ($o.Exists) { Set-ItemProperty -LiteralPath $script:DxPrefKey -Name 'DirectXUserGlobalSettings' -Value ([string]$o.Data) -Type String }
+                else { Remove-ItemProperty -LiteralPath $script:DxPrefKey -Name 'DirectXUserGlobalSettings' -ErrorAction SilentlyContinue }
+            }
+            else {
+                # the value holds several "Name=value;" pairs - change only ours, keep the rest
+                $cur = Get-DxGlobalSettings
+                $parts = @($cur -split ';' | Where-Object { $_ -and $_ -notmatch '^SwapEffectUpgradeEnable=' })
+                $parts += 'SwapEffectUpgradeEnable=' + $(if ($On) { '1' } else { '0' })
+                if (-not (Test-Path -LiteralPath $script:DxPrefKey)) { New-Item -Path $script:DxPrefKey -Force | Out-Null }
+                Set-ItemProperty -LiteralPath $script:DxPrefKey -Name 'DirectXUserGlobalSettings' -Value (($parts -join ';') + ';') -Type String
+            }
+        }
+        default {
+            foreach ($v in $Item.Values) {
+                if (-not (Test-Path -LiteralPath $v.Path)) { New-Item -Path $v.Path -Force | Out-Null }
+                $ov = $null; if ($restore) { $ov = @($o.Values | Where-Object { $_.Path -eq $v.Path -and $_.Name -eq $v.Name }) | Select-Object -First 1 }
+                if ($ov) {
+                    if ($ov.Exists) { $kind = $ov.Kind; if (-not $kind) { $kind = 'DWord' }; Set-ItemProperty -LiteralPath $v.Path -Name $v.Name -Value $ov.Data -Type $kind }
+                    else { Remove-ItemProperty -LiteralPath $v.Path -Name $v.Name -ErrorAction SilentlyContinue }
+                }
+                else {
+                    $data = $v.Off; if ($On) { $data = $v.On }
+                    Set-ItemProperty -LiteralPath $v.Path -Name $v.Name -Value $data -Type DWord
+                }
+            }
+        }
+    }
+    if ($restore) { $saved.Remove($k) }
+    Write-JsonFile (Get-StatePath 'performance') ([pscustomobject]$saved)
+    $verb = 'turned off'; if ($On) { $verb = 'turned on' }; if ($restore) { $verb = 'put back how it was' }
+    Write-Log "Performance: $($Item.Name) - $verb" 'OK'
+}
+
+function Restore-AllPerf {
+    $saved = Get-PerfSaved
+    foreach ($it in $script:PerfItems) {
+        if ($saved.ContainsKey($it.Key)) { try { Set-PerfItem $it $false } catch { Write-Log "Performance: $($it.Name) - $($_.Exception.Message)" 'ERROR' } }
+    }
+    Write-Log 'Performance: all CleanIT changes put back.' 'OK'
+}
+
+function Set-RecommendedPerf {
+    foreach ($s in Get-PerfStatus) {
+        if ($s.Recommended -and -not $s.On) {
+            $it = $script:PerfItems | Where-Object { $_.Key -eq $s.Key } | Select-Object -First 1
+            try { Set-PerfItem $it $true } catch { Write-Log "Performance: $($it.Name) - $($_.Exception.Message)" 'ERROR' }
+        }
+    }
+}
+
+# Rated speed from common RAM part numbers (G.Skill F4-3200C16, Corsair CMK16GX4M2B3200C16, Kingston KF432C16,
+# Crucial BL8G32C16U4B, TeamGroup TF3D416G3200HC16). 0 = unknown.
+function Get-RamRatedSpeed {
+    param([string]$Part)
+    $p = $Part.Trim().ToUpper()
+    if ($p -match '^F[45]-(\d{4})') { return [int]$Matches[1] }
+    if ($p -match '^CM[A-Z0-9]*?X[45]M\dZ?[A-Z]?(\d{4})C') { return [int]$Matches[1] }
+    if ($p -match '^KF[45]?(\d{2})C') { return [int]$Matches[1] * 100 }
+    if ($p -match '^BL\d+G(\d{2})C') { return [int]$Matches[1] * 100 }
+    if ($p -match '(\d{4})HC\d{2}') { return [int]$Matches[1] }
+    0
+}
+
+# Read-only checks: things that cost real performance and need a change outside CleanIT (BIOS, display settings).
+function Get-PerformanceChecks {
+    $out = New-Object System.Collections.Generic.List[object]
+    $add = { param($Key, $Level, $Title, $Text, $ActLabel, $ActKind, $ActTarget)
+        $out.Add([pscustomobject]@{ Key = $Key; Level = $Level; Title = $Title; Text = $Text; Action = $(if ($ActLabel) { [pscustomobject]@{ Label = $ActLabel; Kind = $ActKind; Target = $ActTarget } } else { $null }) }) }
+
+    # Monitor refresh rate
+    $vcs = @(Invoke-WithTimeout 'Display info' { Get-CimInstance Win32_VideoController | Where-Object { $_.CurrentRefreshRate -gt 1 } } 15 @())
+    foreach ($vc in $vcs) {
+        $cur = [int]$vc.CurrentRefreshRate; $max = [int]$vc.MaxRefreshRate
+        if ($max -gt $cur + 5 -and $max -le 500) {
+            & $add 'Refresh' 'WARN' "Your screen runs at $cur Hz but can do $max Hz" "Games and the desktop will look much smoother at $max Hz - free, and the biggest upgrade on this list. Settings > Display > Advanced display > Choose a refresh rate. If $max Hz is missing there, use a DisplayPort cable (or a newer HDMI cable)." 'Open display settings' 'url' 'ms-settings:display-advanced'
+        }
+        elseif ($cur -gt 0) { & $add 'Refresh' 'OK' "Screen refresh rate: $cur Hz" 'Running at the highest rate Windows reports for this screen.' $null $null $null }
+    }
+
+    # RAM speed (XMP / EXPO / DOCP)
+    $mem = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
+    if ($mem.Count) {
+        $conf = [int]($mem | Measure-Object ConfiguredClockSpeed -Minimum).Minimum
+        $rated = [int](@($mem | ForEach-Object { Get-RamRatedSpeed ([string]$_.PartNumber) }) | Measure-Object -Maximum).Maximum
+        $ddr = switch ([int]$mem[0].SMBIOSMemoryType) { 26 { 'DDR4' } 34 { 'DDR5' } default { '' } }
+        $gb = [math]::Round((($mem | Measure-Object Capacity -Sum).Sum) / 1GB)
+        if ($rated -gt 0 -and $conf -gt 0 -and $rated -gt $conf + 100) {
+            & $add 'Ram' 'WARN' "Your memory runs at $conf MT/s but is rated for $rated" "The memory profile (XMP, EXPO or DOCP) is off in the BIOS, so the RAM runs at a slow default speed. Turning it on is free performance - often 5-15% more FPS in CPU-heavy games. In the BIOS, look for ""XMP"", ""EXPO"" or ""DOCP"" (Gigabyte: Tweaker > Extreme Memory Profile) and pick Profile 1, then save with F10." $null $null $null
+        }
+        elseif ($ddr -eq 'DDR4' -and $conf -gt 0 -and $conf -le 2666 -and $rated -eq 0) {
+            & $add 'Ram' 'INFO' "Your memory runs at $conf MT/s" "That is the slow default speed for $ddr. If your RAM's label or box says a higher speed (like 3200 or 3600), turn on XMP / DOCP in the BIOS for free performance." $null $null $null
+        }
+        else { & $add 'Ram' 'OK' "Memory: $gb GB $ddr at $conf MT/s" $(if ($rated) { 'Running at its rated speed (XMP/EXPO is on).' } else { 'Speed looks normal.' }) $null $null $null }
+    }
+
+    # Power plan
+    $plan = [string](& powercfg.exe /getactivescheme 2>$null)
+    if ($plan -match 'a1841308-3541-4fab-bc81-f71556f20b4a') {
+        & $add 'Plan' 'WARN' 'The "Power saver" plan is active' 'It slows the processor down to save power. Switch to Balanced and use the power mode switch below.' 'Open power options' 'url' 'ms-settings:powersleep'
+    }
+
+    # Memory integrity (security feature with a small gaming cost) - information only, never switched off by CleanIT
+    $dg = Invoke-WithTimeout 'Device Guard' { Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard Win32_DeviceGuard } 15
+    if ($dg -and (@($dg.SecurityServicesRunning) -contains 2)) {
+        & $add 'Hvci' 'INFO' 'Memory integrity is on' 'A Windows security feature that blocks malicious drivers. It can cost a few % FPS in some games. CleanIT recommends leaving it on; turn it off only if you need every frame and accept the risk (Windows Security > Device security > Core isolation).' 'Open Core isolation' 'url' 'windowsdefender://coreisolation'
+    }
+
+    # Third-party "game boosters" - honest note
+    $boosters = @(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -match 'Razer Cortex|Game Booster|Game Fire|GameBoost|Smart Game Booster|Wise Game' } | ForEach-Object { [string]$_.DisplayName } | Sort-Object -Unique)
+    if ($boosters.Count) {
+        & $add 'Booster' 'INFO' ($boosters -join ', ') 'Game boosters mostly close background apps before a game - which frees memory a modern PC does not need, and Windows Game Mode already does the useful part. Keep it if you use its other features (like Razer''s deals or recording); otherwise it is safe to remove on the Apps page.' 'Open Apps' 'page' 'apps'
+    }
+
+    # Startup apps
+    $startup = @(Get-StartupItems -Quick | Where-Object { $_.Enabled }).Count
+    if ($startup -gt 6) { & $add 'Startup' 'INFO' "$startup apps start with Windows" 'Each one slows sign-in and keeps running in the background. Turning off the ones you do not need is the biggest speed-up for most PCs.' 'Open Startup' 'page' 'startup' }
+    else { & $add 'Startup' 'OK' "$startup apps start with Windows" 'Nice and lean.' $null $null $null }
+
+    # Free space on the system drive
+    $c = Get-CimInstance Win32_LogicalDisk -Filter ("DeviceID='{0}'" -f $env:SystemDrive)
+    if ($c -and $c.Size -gt 0) {
+        $pct = [math]::Round(100 * $c.FreeSpace / $c.Size)
+        if ($pct -lt 10) { & $add 'Space' 'WARN' "Only $pct% free on $($env:SystemDrive)" 'A nearly full system drive slows Windows and updates down. Free up at least 15%.' 'Open Clean' 'page' 'clean' }
+    }
+    $out.ToArray()
+}
+
+# ---------------------------------------------------------------------------
 # Health, security, maintenance
 # ---------------------------------------------------------------------------
 function Test-PendingReboot {
@@ -3252,6 +3509,10 @@ function Get-DashboardData {
     $mpOn = (Get-DefenderActive).Active
     if ($mpOn -and $mpPref -and ([int]$mpPref.PUAProtection -ne 1 -or [int]$mpPref.EnableNetworkProtection -ne 1)) {
         & $add 2 'INFO' 'Extra Microsoft Defender protection is available (blocking unwanted apps and scam websites)' 'Protect'
+    }
+
+    foreach ($pc in @(Get-PerformanceChecks | Where-Object { $_.Level -eq 'WARN' -and @('Refresh', 'Ram', 'Plan') -contains $_.Key })) {
+        & $add 5 'WARN' ($pc.Title + ' - free speed-up') 'Performance'
     }
 
     $stab = Get-StabilitySummary

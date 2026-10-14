@@ -74,6 +74,12 @@ Roadmap: `ROADMAP.md`.
   switch off restores that original. Defender controls only apply when `AMRunningMode` is Normal (another AV = passive).
   Quarantine restore only accepts threat names from the server's last `threats` result (`$script:Cache.Quarantine`).
   Never change Defender settings, start scans, enable Sandbox or run an offline scan on the dev PC without asking.
+- Performance page: `$script:PerfItems` (Reg items with On/Off data + `UnsetIsOn`, or custom kinds PowerMode /
+  MouseAccel / WindowedOpt via `CleanIT.Perf` = powrprof overlay + SystemParametersInfo). Originals saved once per item
+  in `State\performance.json`; turning off with a saved original restores it exactly. `DirectXUserGlobalSettings` holds
+  several `Name=value;` pairs - only ours is changed. `Get-PerformanceChecks` is read-only (refresh rate, RAM vs. rated
+  speed parsed from the part number, power plan, memory integrity info, game boosters, startup, free space).
+  Only settings with a measurable effect; RAM cleaners / process killers / TCP tweaks stay out of scope.
 
 ## Hard rules
 - Must run on stock **Windows PowerShell 5.1** (no `??`, ternary, `-Parallel`, PS7-only cmdlets). C# must be C# 5.

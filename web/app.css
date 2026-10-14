@@ -246,3 +246,4 @@ code.path { font: 12.5px Consolas, monospace; background: var(--panel-2); border
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button:hover { color: var(--text); }
 .seg button.active { background: var(--accent); color: var(--accent-ink); }
+.protect-hero .shield.warn { background: var(--warn-soft); color: var(--warn); }

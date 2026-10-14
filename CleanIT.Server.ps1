@@ -531,6 +531,27 @@ $script:Actions = @{
 
     networkCheck = @{ Name = 'Checking your network'; Work = { param($P) Get-NetworkCheck } }
 
+    perfStatus = @{ Name = 'Checking performance settings'
+        Work = { param($P) [pscustomobject]@{ items = @(Get-PerfStatus); checks = @(Get-PerformanceChecks) } } }
+    perfApply = @{ Name = 'Changing performance settings'
+        Prep = {
+            param($A)
+            $valid = @($script:PerfItems | ForEach-Object { $_.Key })
+            $changes = @(foreach ($c in @($A.changes)) { if ($valid -contains [string]$c.key) { [pscustomobject]@{ Key = [string]$c.key; On = [bool]$c.on } } })
+            if (-not $changes.Count) { throw 'Nothing to change.' }
+            @{ Changes = $changes; Rp = (Use-RestorePoint $A) }
+        }
+        Work = {
+            param($P)
+            if ($P.Rp) { [void](New-CleanITRestorePoint 'Before performance changes') }
+            foreach ($c in $P.Changes) {
+                $item = $script:PerfItems | Where-Object { $_.Key -eq $c.Key } | Select-Object -First 1
+                try { Set-PerfItem $item $c.On } catch { Write-Log "Performance: $($item.Name) - $($_.Exception.Message)" 'ERROR' }
+            }
+            [pscustomobject]@{ items = @(Get-PerfStatus) }
+        } }
+    perfRestore = @{ Name = 'Putting performance settings back'; Work = { param($P) Restore-AllPerf; [pscustomobject]@{ items = @(Get-PerfStatus) } } }
+
     health = @{ Name = 'Health report'; Work = { param($P) [pscustomobject]@{ text = (Get-HealthReport) } } }
     shutdowns = @{ Name = 'Reading shutdown history'; Work = { param($P) Get-ShutdownHistory } }
     optimize = @{ Name = 'Optimizing drives'; Work = { param($P) Invoke-DriveOptimize } }
@@ -949,7 +970,7 @@ function Invoke-Api {
                     'url' {
                         $u = [string]$body.url
                         $web = '^https://(www\.nvidia\.com|us\.download\.nvidia\.com|www\.amd\.com|www\.intel\.com|www\.bing\.com)/[\w\-./?=&%+:]*$'
-                        if ($u -notmatch '^(ms-settings:[a-z\-]+|windowsdefender:|ms-windows-store://(pdp/\?PFN=[\w.\-]+|search/\?query=[\w%.\-+]+))$' -and $u -notmatch $web) { throw 'Link not allowed.' }
+                        if ($u -notmatch '^(ms-settings:[a-z\-]+|windowsdefender:|windowsdefender://coreisolation|ms-windows-store://(pdp/\?PFN=[\w.\-]+|search/\?query=[\w%.\-+]+))$' -and $u -notmatch $web) { throw 'Link not allowed.' }
                         Open-ForUser $u
                     }
                     default { throw 'Unknown target.' }

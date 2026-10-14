@@ -9,7 +9,7 @@ Two PowerShell files, no install required, no ads, no telemetry, everything logg
 | **Windows 10/11** | [CleanIT-Windows.zip](https://github.com/Juicethekidd99/CleanIT/releases/latest/download/CleanIT-Windows.zip) | see [Quick start](#quick-start) below |
 | **Mac** (macOS 12 or newer) | [CleanIT-Mac.zip](https://github.com/Juicethekidd99/CleanIT/releases/latest/download/CleanIT-Mac.zip) | see [CleanIT for Mac](mac/README.md) |
 
-> **Status: beta (v2.7.2).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
+> **Status: beta (v2.8.0).** Scanning, the disk tools and the dashboard are tested. Removal features (bloatware,
 > uninstall leftovers, services, privacy changes) and the weekly task are new - leave "create a restore point"
 > switched on (default) and review every list before you click. Use at your own risk; see LICENSE.
 
@@ -52,6 +52,7 @@ If Windows blocks the downloaded files: right-click each > Properties > tick **U
 | Clean | 22 junk categories in 3 groups (Windows / Browsers / Apps), size per category, shows which open apps block a full clean |
 | Disk | **Free up space** assistant: drive overview, already-unpacked archives and the Recycle Bin (safe wins, pre-ticked), old disk images/setup files and older versions of the same file to review, and step-by-step guides to move Steam games, VirtualBox VMs and Downloads to your emptier drive. Plus space analyzer with drill-down and size bars; large-file finder ("not used in N days"); duplicate finder (SHA-256, hard-link aware). Files only ever go to the Recycle Bin, one tick at a time |
 | Startup | Run keys, Startup folders, logon/boot scheduled tasks, auto-start services. Publisher + signature check (unsigned = orange). Undo all |
+| Performance | Speed check (monitor refresh rate, RAM running at its rated XMP/EXPO speed, power plan, startup apps, free space, game boosters explained) and reversible gaming/speed settings: Game Mode, no background game recording, optimizations for windowed games, GPU scheduling, mouse acceleration off, Best performance power mode. One click "game mode" applies the recommended ones. No RAM cleaners or fake boosters |
 | Apps | Bloatware remover (curated recommended list, hard blocklist for system parts, optional de-provisioning, reinstall via Store link). Uninstaller that finds leftover folders/registry keys afterwards |
 | Drivers | A plain-English **What to do** checklist (most important first, with Done buttons), a step-by-step BIOS guide for your board, GPU driver vs. the latest official NVIDIA driver (straight from NVIDIA), broken devices explained, BIOS age, older third-party drivers with official links, and removal of old unused driver packages. Never a third-party driver database |
 | Updates | Every update labelled Important / Recommended / Optional / Automatic with a one-line reason; only the ones worth installing are pre-ticked. App updates via winget (with "never update" list), Windows updates and official driver updates via the Windows Update API |
@@ -104,6 +105,8 @@ If Windows blocks the downloaded files: right-click each > Properties > tick **U
 .\CleanIT.ps1 -DriverCheck                           # graphics/BIOS/device/driver report
 .\CleanIT.ps1 -Privacy                               # apply recommended privacy settings
 .\CleanIT.ps1 -UndoPrivacy -UndoStartup              # put back everything CleanIT changed
+.\CleanIT.ps1 -Performance                           # apply recommended performance/gaming settings (reversible)
+.\CleanIT.ps1 -UndoPerformance                       # put them back
 .\CleanIT.ps1 -LargeFiles -Path D:\ -MinSizeMB 1000  # list only, never deletes
 .\CleanIT.ps1 -Duplicates -Path $env:USERPROFILE     # list only, never deletes
 .\CleanIT.ps1 -Optimize -Repair -QuickScan           # TRIM/defrag, DISM+SFC, Defender quick scan
