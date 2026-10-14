@@ -29,6 +29,12 @@ Roadmap: `ROADMAP.md`.
   startup changes only use `launchctl disable/enable` (never edit/delete plists) and are recorded in `State/startup.json`;
   admin actions go through `shAdmin` (macOS password prompt). Paths sent back by the page must come from the engine's
   last results (`Disk.trashable`, `Apps.leftoverPaths`, `Startup.lastItems`).
+- `Perf.swift`: Performance page. `Perf.items` = reversible settings (`defaults` keys or `pmset -c lowpowermode` via
+  shAdmin); the original value (or null = not set) is saved once in `State/performance.json` and turning off restores it
+  exactly (null -> `defaults delete`). `Perf.checks()` is read-only. Never apply the admin (pmset) item on the dev Mac
+  without asking; test round trips on a harmless `defaults` item.
+- Cloud folders (OneDrive in ~/Library/CloudStorage) can block file calls for minutes: fleet writes run on
+  `Fleet.queue` (fire-and-forget in the app, `wait:` in the CLI), reads and the reachability check have timeouts.
 - Don't trigger permission prompts from the Dashboard/Security (login items via System Events only on the Startup page).
 - macOS version numbers jump 15 -> 26: compare positions in `releases` (Health.swift); add each autumn's release.
 - Releases: every GitHub release (vX.Y.Z, same tags as Windows) gets two extra files from `tools/release-assets.sh vX.Y.Z`:

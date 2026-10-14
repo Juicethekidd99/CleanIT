@@ -32,8 +32,16 @@ enum Fleet {
         var mode = "off"
         if !p.isEmpty { mode = (od != nil && p.hasPrefix(od!)) ? "onedrive" : "custom" }
         let existing = od.map { $0 + "/" + folderName }.flatMap { FS.isDir($0) ? $0 : nil }
-        return ["Mode": mode, "Path": p, "OneDrive": od ?? NSNull(), "Reachable": !p.isEmpty && FS.isDir(p),
+        return ["Mode": mode, "Path": p, "OneDrive": od ?? NSNull(), "Reachable": !p.isEmpty && reachable(p),
                 "Existing": existing ?? NSNull(), "Computer": computer, "DisplayName": displayName]
+    }
+
+    // A folder check that gives up after 3 s (a stalled cloud folder counts as not reachable).
+    static func reachable(_ p: String) -> Bool {
+        var ok = false
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async { ok = FS.isDir(p); done.signal() }
+        return done.wait(timeout: .now() + 3) == .success && ok
     }
 
     static func setPath(_ p: String) throws {
@@ -87,27 +95,52 @@ enum Fleet {
         ]
     }
 
-    // Writes this Mac's report if a fleet folder is set. Never throws - a missing folder only logs a warning.
-    static func writeReport(_ dash: JSON? = nil) {
+    // Writes this Mac's report if a fleet folder is set. Never throws and never blocks the caller for long:
+    // cloud folders (OneDrive, iCloud) can stall for minutes while they sync or wait for a permission prompt.
+    // wait = how long to wait for the write (CLI runs wait so the process doesn't exit first; the app doesn't).
+    static let queue = DispatchQueue(label: "cleanit.fleet")
+    private static var pending = false
+    private static let lock = NSLock()
+
+    static func writeReport(_ dash: JSON? = nil, wait: TimeInterval = 0) {
         let p = path
         guard !p.isEmpty else { return }
-        do {
-            try FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true)
-            let data = try JSONSerialization.data(withJSONObject: report(dash ?? Dashboard.data()), options: [.prettyPrinted, .sortedKeys])
-            try data.write(to: URL(fileURLWithPath: p + "/\(computer).json"), options: .atomic)
-            Log.write("Fleet report written to \(Paths.tilde(p))", "OK")
-        } catch {
-            Log.write("Fleet report could not be written to \(Paths.tilde(p)): \(error.localizedDescription)", "WARN")
+        lock.lock(); if pending { lock.unlock(); Log.write("Fleet report skipped - the previous one is still being written.", "WARN"); return }
+        pending = true; lock.unlock()
+        let data = try? JSONSerialization.data(withJSONObject: report(dash ?? Dashboard.data()), options: [.prettyPrinted, .sortedKeys])
+        let done = DispatchSemaphore(value: 0)
+        queue.async {
+            defer { lock.lock(); pending = false; lock.unlock(); done.signal() }
+            do {
+                guard let data = data else { return }
+                try FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true)
+                try data.write(to: URL(fileURLWithPath: p + "/\(computer).json"), options: .atomic)
+                Log.write("Fleet report written to \(Paths.tilde(p))", "OK")
+            } catch {
+                Log.write("Fleet report could not be written to \(Paths.tilde(p)): \(error.localizedDescription)", "WARN")
+            }
+        }
+        if wait > 0 && done.wait(timeout: .now() + wait) == .timedOut {
+            Log.write("Fleet folder is not answering (is OneDrive syncing or asking for permission?) - report not written yet.", "WARN")
         }
     }
 
-    static func reports() -> [JSON] {
+    static func reports() throws -> [JSON] {
         let p = path
         guard !p.isEmpty else { return [] }
-        return FS.children(p).filter { $0.hasSuffix(".json") }.compactMap { f in
-            guard let j = readJSON(f) as? JSON, j["Computer"] is String else { return nil }
-            return j
+        var out: [JSON]?
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            out = FS.children(p).filter { $0.hasSuffix(".json") }.compactMap { f in
+                guard let j = readJSON(f) as? JSON, j["Computer"] is String else { return nil }
+                return j
+            }
+            done.signal()
         }
+        if done.wait(timeout: .now() + 30) == .timedOut {
+            throw CleanITError("The fleet folder is not answering. If it is in OneDrive, check that OneDrive is running and signed in, and allow CleanIT to access it if macOS asks.")
+        }
+        return out ?? []
     }
 
     static func remove(_ name: String) throws {

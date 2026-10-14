@@ -200,6 +200,13 @@ enum Dashboard {
         let c = Health.crashes(days: 30)
         if let panic = c.first(where: { $0.0.hasPrefix("Kernel panic") }) { issue("WARN", "\(panic.1) kernel panic(s) in 30 days - see Health.", "Health", 8) }
         if let b = Health.battery(), let h = b["health"] as? Int, h > 0, h < 80 { issue("INFO", "Battery holds \(h)% of its original charge.", "Health", 2) }
+        for d in Perf.displays() where d.current > 0 && d.best > d.current + 5 {
+            issue("WARN", "\(d.name) runs at \(Int(d.current.rounded())) Hz but can do \(Int(d.best.rounded())) Hz.", "Performance", 5)
+        }
+        if ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical {
+            issue("WARN", "The Mac is too hot and slowing itself down.", "Performance", 5)
+        }
+        if Perf.acLowPower() == "1" { issue("INFO", "Low Power Mode is on even when plugged in.", "Performance", 3) }
         if Int(ProcessInfo.processInfo.systemUptime) > 21 * 86400 { issue("INFO", "Not restarted for over 3 weeks - a restart applies updates and frees memory.", nil, 2) }
         if !hasFullDiskAccess() { issue("INFO", "CleanIT has no Full Disk Access, so Safari, Mail and the Trash can't be scanned. Optional - see Settings.", "Settings", 0) }
 

@@ -53,15 +53,18 @@ enum Bridge {
         "securityFix": ("Security fix", { a, _ in
             if a["fix"] as? String == "EnableFirewall" { try Security.enableFirewall() }
             return [:] as JSON }),
+        "perfStatus": ("Checking performance", { _, _ in ["items": Perf.status(), "checks": Perf.checks()] }),
+        "perfApply": ("Changing performance settings", { a, _ in try Perf.apply((a["changes"] as? [JSON]) ?? []); return ["items": Perf.status()] }),
+        "perfRestore": ("Putting performance settings back", { _, _ in try Perf.restoreAll(); return ["items": Perf.status()] }),
         "health": ("Health report", { _, _ in ["text": Health.report()] }),
         "flushDns": ("Flushing DNS", { _, _ in try Health.flushDNS(); return [:] as JSON }),
-        "fleetList": ("Reading fleet reports", { _, _ in ["items": Fleet.reports()] }),
+        "fleetList": ("Reading fleet reports", { _, _ in ["items": try Fleet.reports()] }),
         "fleetOneDrive": ("Setting up the OneDrive fleet", { _, _ in try Fleet.useOneDrive(); return [:] as JSON }),
         "fleetSetPath": ("Setting fleet folder", { a, _ in try Fleet.setPath(a["path"] as? String ?? ""); return [:] as JSON }),
         "fleetChoose": ("Choosing fleet folder", { _, _ in
             guard let p = Fleet.chooseFolder() else { return ["chosen": false] as JSON }
             try Fleet.setPath(p); return ["chosen": true] as JSON }),
-        "fleetWrite": ("Writing fleet report", { _, _ in Fleet.writeReport(); return [:] as JSON }),
+        "fleetWrite": ("Writing fleet report", { _, _ in Fleet.writeReport(wait: 30); return [:] as JSON }),
         "fleetRemove": ("Removing computer from fleet view", { a, _ in try Fleet.remove(a["computer"] as? String ?? ""); return [:] as JSON }),
         "scheduleSave": ("Saving schedule", { a, _ in
             try Schedule.save(enabled: a["enabled"] as? Bool ?? false, day: a["day"] as? String ?? "Sunday",
@@ -90,6 +93,9 @@ enum Bridge {
         "sharing": "x-apple.systempreferences:com.apple.Sharing-Settings.extension",
         "storage": "x-apple.systempreferences:com.apple.settings.Storage",
         "appstore": "macappstore://showUpdatesPage",
+        "displays": "x-apple.systempreferences:com.apple.Displays-Settings.extension",
+        "battery": "x-apple.systempreferences:com.apple.Battery-Settings.extension",
+        "mouse": "x-apple.systempreferences:com.apple.Mouse-Settings.extension",
         "onedrive": "macappstore://apps.apple.com/app/onedrive/id823766827",
     ]
 

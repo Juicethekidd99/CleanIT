@@ -38,6 +38,7 @@ no open port.
 | Clean | 19 junk categories (Mac / Browsers / Apps / Developer). Caches of open apps are skipped |
 | Disk | Space analyzer, large-file finder ("not opened in N days"), duplicate finder (SHA-256, hard-link aware). Files only go to the Trash |
 | Startup | Launch Agents, Launch Daemons, Login Items with code-signature check. Uses launchd's own on/off switch (plists are never deleted). Undo all |
+| Performance | Speed check (screen refresh rate vs. its maximum, Low Power Mode, overheating, memory pressure/swap, busy background apps, startup items, free space, uptime, mouse acceleration for gaming) and reversible settings: full speed while charging, no .DS_Store on network drives, shorter window/Dock/Mission Control animations. One click turns on the recommended ones; "Put everything back" restores the originals. No RAM purging or fake boosters |
 | Apps | Uninstaller (app to the Trash) + strict leftover finder (exact bundle id or app name in ~/Library and /Library) |
 | Updates | macOS Software Update with Important/Recommended/Optional advice; Homebrew formulae and casks with a "never update" list |
 | Security | macOS support status, FileVault, firewall, SIP, Gatekeeper, automatic updates, XProtect, auto-login, SSH/Screen Sharing, unsigned startup items |
@@ -72,6 +73,8 @@ $C --startup [--all]                        # list startup items (--all includes
 $C --report                                 # health + security report
 $C --updates                                # Homebrew upgrades (honours the "never update" list)
 $C --fleet                                  # write this Mac's report to the fleet folder now
+$C --performance                            # turn on the recommended performance settings (reversible)
+$C --undo-performance                       # put them back
 ```
 
 ## Fleet with your PCs
@@ -80,7 +83,7 @@ sign in with the same Microsoft account, then **CleanIT > Fleet > Join my fleet 
 after every scan, clean and weekly clean. Not using OneDrive? **Choose a folder...** works with Dropbox, Google Drive or a NAS.
 
 ## Files
-- `~/Library/Application Support/CleanIT/` - `settings.json`, `history.json`, `State/` (startup changes, update counts)
+- `~/Library/Application Support/CleanIT/` - `settings.json`, `history.json`, `State/` (startup and performance changes with original values, update counts)
 - `~/Library/Logs/CleanIT/` - one log per day
 - `~/Library/LaunchAgents/io.github.juicethekidd99.cleanit.weekly.plist` - only when the weekly clean is on
 

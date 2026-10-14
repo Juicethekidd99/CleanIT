@@ -45,7 +45,8 @@ const ICONS = {
   folder: 'M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
   chip: 'M7 7h10v10H7zM10 10h4v4h-4zM9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4',
   file: 'M6 3h8l5 5v13H6zM14 3v5h5',
-  cloud: 'M7 18a5 5 0 1 1 .9-9.9A6 6 0 0 1 19 10a4 4 0 0 1 0 8z'
+  cloud: 'M7 18a5 5 0 1 1 .9-9.9A6 6 0 0 1 19 10a4 4 0 0 1 0 8z',
+  speed: 'M4.6 18a9 9 0 1 1 14.8 0M12 14l4-5'
 };
 function icon(name) {
   const ns = 'http://www.w3.org/2000/svg';
@@ -127,7 +128,7 @@ function openThing(what, extra) { return api('/api/open', Object.assign({ what }
 const S = { page: 'dashboard', state: null, busy: {}, failed: {}, cache: {}, sel: {}, tab: {}, progress: {} };
 const pages = {};
 const NAV = [
-  ['dashboard', 'Dashboard', 'home'], ['clean', 'Clean', 'clean'], ['disk', 'Disk', 'disk'], ['startup', 'Startup', 'startup'],
+  ['dashboard', 'Dashboard', 'home'], ['clean', 'Clean', 'clean'], ['disk', 'Disk', 'disk'], ['startup', 'Startup', 'startup'], ['performance', 'Performance', 'speed'],
   ['apps', 'Apps', 'apps'], ['updates', 'Updates', 'updates'], ['security', 'Security', 'security'],
   ['health', 'Health', 'health'], ['fleet', 'Fleet', 'fleet'], ['settings', 'Settings', 'settings']
 ];
@@ -585,6 +586,78 @@ async function applyStartup() {
   if (!changes.length) return;
   await task('startupApply', async () => { await run('startupApply', { changes }); toast(changes.length + ' startup change(s) applied.'); });
   await loadStartup();
+}
+
+// ----- Performance (same layout as the Windows page)
+pages.performance = {
+  title: 'Performance',
+  render(root) {
+    const pf = S.cache.perf;
+    if (!pf) autoLoad('perf', loadPerf);
+    if (!pf) { root.append(h('div', { class: 'empty', text: 'Checking your Mac...' })); return; }
+    const ch = S.cache.perfChanges = S.cache.perfChanges || {};
+    const isOn = s => s.Key in ch ? ch[s.Key] : s.On;
+    const rec = pf.items.filter(s => s.Recommended);
+    const recOn = rec.filter(s => s.On).length;
+    const warns = pf.checks.filter(c => c.Level === 'WARN');
+    const good = recOn === rec.length && !warns.length;
+
+    // 1) Summary + one click
+    root.append(h('div', { class: 'card protect-hero' },
+      h('div', { class: 'shield ' + (good ? 'ok' : 'warn') }, icon('speed')),
+      h('div', { style: 'flex:1' },
+        h('h2', { style: 'margin:0 0 4px', text: good ? 'This Mac is set up for speed' : 'Free speed is available' }),
+        h('div', { class: 'muted', text: recOn + ' of ' + rec.length + ' recommended settings are on' + (warns.length ? '  -  ' + warns.length + ' thing(s) to fix below' : '') + '. Every change can be undone.' }),
+        h('div', { class: 'row', style: 'margin-top:12px' },
+          btn(recOn === rec.length ? 'All recommended settings are on' : 'Turn on all recommended', () => applyPerf(rec.filter(s => !s.On).map(s => ({ key: s.Key, on: true }))), 'primary', 'perfSet', recOn === rec.length),
+          btn('Check again', loadPerf, 'link', 'perf')))));
+
+    // 2) Speed check
+    const act = a => a.Kind === 'page' ? go(a.Target) : a.Kind === 'pane' ? openThing('pane', { pane: a.Target }) : a.Kind === 'app' ? openThing('app', { name: a.Target }) : openThing('url', { url: a.Target });
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Speed check', h('small', { text: 'screen, power, heat, memory and background apps' })),
+      pf.checks.map(c => h('div', { class: 'opt' },
+        h('span', { class: 'pill ' + c.Level, text: c.Level === 'OK' ? 'good' : c.Level === 'WARN' ? 'fix this' : 'info' }),
+        h('div', { class: 't' }, h('b', { text: c.Title }), h('div', { text: c.Text })),
+        c.Action ? btn(c.Action.Label, () => act(c.Action), 'link') : null))));
+
+    // 3) Settings CleanIT can change
+    const n = Object.keys(ch).length;
+    const group = (g, title, sub) => h('div', { class: 'card' }, h('h3', {}, title, h('small', { text: sub })),
+      pf.items.filter(s => s.Group === g).map(s => h('div', { class: 'opt' },
+        toggle(isOn(s), v => { if (v === s.On) delete ch[s.Key]; else ch[s.Key] = v; render(); }),
+        h('div', { class: 't' }, h('b', { text: s.Name }), h('div', { text: s.Description }),
+          h('div', { class: 'small', text: 'Effect: ' + s.Impact + (s.Note ? '. ' + s.Note : '') + (s.Admin ? '. Asks for your Mac password' : '') })),
+        s.Recommended ? h('span', { class: 'pill accent', text: 'recommended' }) : h('span', { class: 'pill INFO', text: 'optional' }))));
+    root.append(group('Speed', 'Speed', 'settings with a real effect'));
+    root.append(group('Snappier', 'Snappier', 'shorter animations - feels faster, optional'));
+    root.append(h('div', { class: 'card sticky-action' }, h('div', { class: 'row' },
+      btn(n ? 'Apply ' + n + ' change' + (n > 1 ? 's' : '') : 'Apply', () => applyPerf(Object.entries(ch).map(([key, on]) => ({ key, on }))), 'primary', 'perfSet', !n),
+      n ? btn('Cancel', () => { S.cache.perfChanges = {}; render(); }, 'link') : null,
+      h('span', { class: 'spacer' }),
+      pf.items.some(s => s.ChangedByCleanIT) ? btn('Put everything back', async () => {
+        if (!await confirmBox('Put performance settings back?', 'Every setting CleanIT changed on this page goes back to how it was before.', 'Put back')) return;
+        await task('perfSet', async () => { S.cache.perf.items = (await run('perfRestore')).items; S.cache.perfChanges = {}; toast('Settings put back.'); });
+      }, 'link', 'perfSet') : null)));
+
+    // 4) Honesty section
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'What CleanIT does not do (and why)'),
+      bullets([
+        'No "RAM cleaner" or memory purge - macOS keeps spare memory full of cached data on purpose; emptying it makes the next things you open slower.',
+        'No quitting your apps behind your back - quit what you don\'t need yourself; Activity Monitor shows what is busy.',
+        'No turning off Spotlight, System Integrity Protection, XProtect or updates "for speed" - the gain is tiny and the risk is real.',
+        'No deleting sleepimage/swap files or stripping language files - macOS needs them, and stripping breaks app signatures.',
+        'The biggest real speed-ups are on this page: free disk space, fewer startup items, Low Power Mode off when you need speed, a cool Mac, the right refresh rate, enough memory, and a restart now and then.'
+      ])));
+  }
+};
+function loadPerf() { return task('perf', async () => { S.cache.perf = await run('perfStatus'); S.cache.perfChanges = {}; }); }
+async function applyPerf(changes) {
+  if (!changes.length) return;
+  await task('perfSet', async () => {
+    S.cache.perf.items = (await run('perfApply', { changes }, prog('perfSet'))).items;
+    S.cache.perfChanges = {};
+    toast('Done - settings applied.');
+  });
 }
 
 // ----- Apps
