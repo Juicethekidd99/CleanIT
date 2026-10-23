@@ -34,6 +34,7 @@
     .\CleanIT.ps1 -UndoPrivacy -UndoStartup         # put back everything CleanIT changed
     .\CleanIT.ps1 -Performance                      # apply recommended performance/gaming settings (reversible)
     .\CleanIT.ps1 -UndoPerformance                  # put performance settings back
+    .\CleanIT.ps1 -Memory                           # memory report: real usage, page file, biggest apps (changes nothing)
     .\CleanIT.ps1 -LargeFiles -Path D:\ -MinSizeMB 1000
     .\CleanIT.ps1 -Duplicates -Path $env:USERPROFILE
     .\CleanIT.ps1 -Optimize -Repair -QuickScan
@@ -66,6 +67,8 @@ param(
     [switch]$UndoPrivacy,
     [switch]$Performance,
     [switch]$UndoPerformance,
+    [switch]$Memory,
+    [switch]$MemoryCheck,
     [switch]$UndoStartup,
     [switch]$ListCategories,
     [switch]$ListBloat,
@@ -87,7 +90,7 @@ $script:SelfPath     = $MyInvocation.MyCommand.Path
 $script:AppDir       = Split-Path -Parent $script:SelfPath
 $script:IsDotSourced = $MyInvocation.InvocationName -eq '.'
 $cliSwitches = @('Scan', 'Clean', 'Updates', 'WindowsUpdates', 'Drivers', 'DriverCheck', 'Update', 'Report', 'Security', 'Optimize', 'Repair', 'QuickScan', 'FullScan',
-                 'LargeFiles', 'Duplicates', 'Privacy', 'UndoPrivacy', 'Performance', 'UndoPerformance', 'UndoStartup', 'ListCategories', 'ListBloat',
+                 'LargeFiles', 'Duplicates', 'Privacy', 'UndoPrivacy', 'Performance', 'UndoPerformance', 'Memory', 'UndoStartup', 'ListCategories', 'ListBloat',
                  'InstallSchedule', 'RemoveSchedule', 'Install', 'Uninstall', 'Fleet')
 $script:IsCli = @($cliSwitches | Where-Object { $PSBoundParameters[$_] }).Count -gt 0
 
@@ -97,6 +100,13 @@ if ($Notify) {
     . (Join-Path $script:AppDir 'CleanIT.Core.ps1')
     $last = @(Get-CleanHistory) | Select-Object -Last 1
     if ($last) { Show-Notification 'CleanIT weekly clean' ('Freed {0}. Open CleanIT for details.' -f (Format-Size $last.Freed)) }
+    exit
+}
+# Low-memory warning (CleanIT Memory Watch task, every 15 min, as the signed-in user, no admin). Changes nothing.
+if ($MemoryCheck) {
+    $script:LogDir = Join-Path $env:TEMP 'CleanIT'
+    . (Join-Path $script:AppDir 'CleanIT.Core.ps1')
+    Invoke-MemoryCheck
     exit
 }
 
@@ -170,6 +180,19 @@ if ($RemoveSchedule)  { Remove-Schedule }
 if ($UndoPrivacy)     { Restore-AllPrivacy }
 if ($UndoPerformance) { Restore-AllPerf }
 if ($Performance)     { Set-RecommendedPerf }
+if ($Memory) {
+    $m = Get-MemoryReport
+    $c = $m.Counters
+    Write-Host ('Memory in use : {0} of {1} that Windows can hand out ({2}%) - apps crash near 100%' -f (Format-Size $c.CommitUsed), (Format-Size $c.CommitLimit), $c.CommitPct)
+    Write-Host ('RAM           : {0} of {1} ({2}%)' -f (Format-Size $c.RamUsed), (Format-Size $c.RamTotal), $c.RamPct)
+    Write-Host ('Verdict       : ' + $m.Verdict)
+    Write-Host ('Page file     : [{0}] {1}' -f $m.PageFile.Level, $m.PageFile.Text)
+    if ($m.Compression.Known) { Write-Host ('Compression   : ' + $(if ($m.Compression.On) { 'on' } else { 'OFF - turn it on from the Memory page' })) }
+    Write-Host ''
+    foreach ($a in $m.Apps | Select-Object -First 15) {
+        Write-Host ('{0,10}  {1,-11} {2}' -f (Format-Size $a.WorkingSet), $a.Kind, $a.Label)
+    }
+}
 if ($UndoStartup)     { Undo-AllStartupChanges }
 
 if ($Update) {

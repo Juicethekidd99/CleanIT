@@ -828,6 +828,7 @@ function Get-DefaultSettings {
         ShutdownsSeenUntil = ''         # unexpected shutdowns before this time were reviewed (Health > Got it)
         ScanWithClean   = $false        # Defender quick scan as part of the weekly clean
         Theme           = 'auto'        # app colours: auto (match Windows) / light / dark
+        MemoryKeep      = @('olk', 'OUTLOOK', 'ms-teams', 'Teams', 'OneDrive', 'WINWORD', 'EXCEL', 'POWERPNT')   # Memory saver never closes these
     }
 }
 
@@ -836,6 +837,7 @@ function Get-Settings {
     $j = Read-JsonFile $script:SettingsFile
     if ($j) { foreach ($p in $j.PSObject.Properties) { if ($s.Contains($p.Name)) { $s[$p.Name] = $p.Value } } }
     $s.WingetExclude = @($s.WingetExclude | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() })
+    $s.MemoryKeep = @($s.MemoryKeep | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() })
     $s
 }
 
@@ -3466,6 +3468,274 @@ function Get-HealthReport {
 # ---------------------------------------------------------------------------
 # Dashboard score + fleet reporting
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Memory saver - for PCs that keep running out of memory (8 GB laptops, Surface...).
+# Apps crash when Windows runs out of COMMIT (RAM + page file), not when "RAM is at 90%". So this:
+#  - shows the commit meter (the real crash warning) and the apps using the most memory,
+#  - makes sure the page file can grow and memory compression is on (reversible, originals in State\memory.json),
+#  - closes ONLY apps the user ticks, gracefully (like clicking X, so unsaved work asks first) - never force-killed,
+#    never automatically. Windows itself, security/IT-management agents, Edge (the work browser AND the CleanIT
+#    window) and the user's Keep list can never be ticked. Still no RAM "cleaner" (emptying RAM only slows Windows).
+# ---------------------------------------------------------------------------
+$script:MemWatchTaskName = 'CleanIT Memory Watch'
+$script:MemSystemNames = @('System', 'Idle', 'Registry', 'smss', 'csrss', 'wininit', 'winlogon', 'services', 'lsass', 'svchost',
+    'dwm', 'explorer', 'fontdrvhost', 'sihost', 'ctfmon', 'taskhostw', 'RuntimeBroker', 'SearchHost', 'SearchApp', 'SearchIndexer',
+    'StartMenuExperienceHost', 'ShellExperienceHost', 'TextInputHost', 'ApplicationFrameHost', 'SystemSettings', 'MemCompression',
+    'Memory Compression', 'audiodg', 'conhost', 'dllhost', 'spoolsv', 'WmiPrvSE', 'SecurityHealthSystray', 'SecurityHealthService',
+    'LockApp', 'Widgets', 'WidgetService', 'PhoneExperienceHost', 'powershell', 'pwsh', 'WindowsTerminal', 'OpenConsole',
+    'smartscreen', 'SgrmBroker', 'TrustedInstaller', 'TiWorker', 'MoUsoCoreWorker', 'usocoreworker', 'CompPkgSrv')
+# Security, VPN, remote support and IT-management agents (wildcards allowed). Closing these can break work or alert IT.
+$script:MemSecurityPatterns = @('MsMpEng', 'MpDefenderCoreService', 'NisSrv', 'MsSense', 'SenseNdr', 'SenseCncProxy', 'SenseIR',
+    'CSFalcon*', 'SentinelAgent', 'SentinelServiceHost', 'SentinelUI', 'Sophos*', 'SAVService', 'ekrn', 'egui', 'bdagent', 'bdservicehost',
+    'avp', 'avpui', 'AvastSvc', 'AvastUI', 'AVGSvc', 'mcshield', 'ccSvcHst', 'CylanceSvc', 'Huntress*', 'cb', 'RepMgr',
+    'IntuneManagementExtension', 'AgentExecutor', 'Microsoft.Management.Services.IntuneWindowsAgent', 'CcmExec',
+    'CagService', 'AEMAgent', 'Datto*', 'Kaseya*', 'AgentMon', 'KaseyaD', 'NinjaRMM*', 'ScreenConnect*', 'ConnectWise*',
+    'LTSVC', 'LTSvcMon', 'LTTray', 'N-able*', 'BASupSrvc*', 'winagent', 'TeamViewer*', 'AnyDesk',
+    'vpnagent', 'vpnui', 'csc_ui', 'acwebsecagent', 'aciseagent', 'PanGPA', 'PanGPS', 'FortiClient*', 'FortiTray', 'FortiSSLVPN*',
+    'ZSATunnel', 'ZSATray', 'ZSAService', 'NordLayer*', 'openvpn*', 'Netskope*', 'stAgentSvc', 'stAgentUI', 'Okta*', 'Duo*',
+    'CleanIT*')
+# The Keep list (important apps never closed) is Settings.MemoryKeep. Edge is protected separately, always.
+
+function Test-NameLike {
+    param([string]$Name, [string[]]$Patterns)
+    foreach ($p in $Patterns) { if ($Name -like $p) { return $true } }
+    $false
+}
+
+# Commit = what Windows has promised to programs (RAM + page file). When Used reaches Limit, apps crash.
+function Get-MemoryCounters {
+    $m = Invoke-WithTimeout 'Memory counters' { Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory } 15
+    $os = Invoke-WithTimeout 'Memory info' { Get-CimInstance Win32_OperatingSystem } 15
+    $ramTotal = [double]0; $ramFree = [double]0
+    if ($os) { $ramTotal = [double]$os.TotalVisibleMemorySize * 1KB; $ramFree = [double]$os.FreePhysicalMemory * 1KB }
+    if ($m) { $limit = [double]$m.CommitLimit; $used = [double]$m.CommittedBytes; $ramFree = [double]$m.AvailableBytes }
+    elseif ($os) { $limit = [double]$os.TotalVirtualMemorySize * 1KB; $used = $limit - [double]$os.FreeVirtualMemory * 1KB }
+    else { $limit = [double]0; $used = [double]0 }
+    $commitPct = 0; if ($limit -gt 0) { $commitPct = [int][math]::Round(100 * $used / $limit) }
+    $ramPct = 0; if ($ramTotal -gt 0) { $ramPct = [int][math]::Round(100 * ($ramTotal - $ramFree) / $ramTotal) }
+    [pscustomobject]@{ RamTotal = $ramTotal; RamUsed = ($ramTotal - $ramFree); RamPct = $ramPct
+                       CommitLimit = $limit; CommitUsed = $used; CommitPct = $commitPct }
+}
+
+function Get-PageFileInfo {
+    $cs = Invoke-WithTimeout 'Page file' { Get-CimInstance Win32_ComputerSystem } 15
+    $auto = $false; if ($cs) { $auto = [bool]$cs.AutomaticManagedPagefile }
+    $files = @(Invoke-WithTimeout 'Page file settings' { Get-CimInstance Win32_PageFileSetting } 15 @()) | Where-Object { $_ }
+    $usage = @(Invoke-WithTimeout 'Page file usage' { Get-CimInstance Win32_PageFileUsage } 15 @()) | Where-Object { $_ }
+    $ramMB = 0
+    $os = Invoke-WithTimeout 'Memory info' { Get-CimInstance Win32_OperatingSystem } 15
+    if ($os) { $ramMB = [double]$os.TotalVisibleMemorySize / 1KB }
+    $sys = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'" -ErrorAction SilentlyContinue
+    $freeGB = 0; if ($sys) { $freeGB = [math]::Round([double]$sys.FreeSpace / 1GB, 1) }
+    $sizeMB = [double]0; foreach ($u in $usage) { $sizeMB += [double]$u.AllocatedBaseSize }
+
+    $state = 'Auto'; $level = 'OK'; $fixable = $false
+    $text = 'Windows manages the page file size, so it can grow when memory gets tight.'
+    if (-not $auto) {
+        $sysManaged = @($files | Where-Object { [double]$_.InitialSize -eq 0 -and [double]$_.MaximumSize -eq 0 }).Count -gt 0
+        $maxMB = [double]0; foreach ($f in $files) { $maxMB += [double]$f.MaximumSize }
+        if (-not $files.Count) {
+            $state = 'Off'; $level = 'BAD'; $fixable = $true
+            $text = 'The page file is switched off. With only RAM to work with, apps crash as soon as memory is full. Turn on "Let Windows manage it" below.'
+        }
+        elseif ($sysManaged) { $state = 'SystemSize'; $text = 'Windows picks the page file size, so it can grow when memory gets tight.' }
+        elseif ($maxMB -lt [double]$ramMB * 1.5) {
+            $state = 'Small'; $level = 'WARN'; $fixable = $true
+            $text = ('The page file is fixed at {0} - too small for {1} of RAM, so apps crash instead of slowing down. Let Windows manage it below.' -f (Format-Size ($maxMB * 1MB)), (Format-Size ($ramMB * 1MB)))
+        }
+        else { $state = 'Custom'; $fixable = $true; $text = ('The page file is set by hand (up to {0}). That is big enough.' -f (Format-Size ($maxMB * 1MB))) }
+    }
+    if ($level -eq 'OK' -and $freeGB -lt 10) {
+        $level = 'WARN'
+        $text = "Only $freeGB GB is free on $env:SystemDrive - the page file has no room to grow, so apps crash when memory runs out. Free up space on the Disk page."
+    }
+    [pscustomobject]@{ State = $state; Auto = $auto; Level = $level; Text = $text; Fixable = $fixable; SizeBytes = $sizeMB * 1MB; FreeGB = $freeGB
+                       Files = @($files | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Initial = [int]$_.InitialSize; Max = [int]$_.MaximumSize } }) }
+}
+
+function Get-MemoryCompression {
+    $a = Invoke-WithTimeout 'Memory compression' { Get-MMAgent } 15
+    if (-not $a) { return [pscustomobject]@{ Known = $false; On = $false } }
+    [pscustomobject]@{ Known = $true; On = [bool]$a.MemoryCompression }
+}
+
+# Apps grouped by program, biggest first. Kind: App (can be closed) / Keep / Background / Protected / Security / System.
+function Get-MemoryApps {
+    $s = Get-Settings
+    $keep = @($s.MemoryKeep)
+    $win = [string]$env:SystemRoot
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($g in @(Get-Process -ErrorAction SilentlyContinue | Group-Object ProcessName)) {
+        $name = [string]$g.Name
+        $ws = [double]0; $priv = [double]0; $hasWin = $false; $path = $null; $session0 = $false
+        foreach ($p in $g.Group) {
+            $ws += [double]$p.WorkingSet64; $priv += [double]$p.PrivateMemorySize64
+            if (($p.MainWindowHandle -ne [IntPtr]::Zero) -and $p.MainWindowTitle) { $hasWin = $true }
+            if ([int]$p.SessionId -eq 0) { $session0 = $true }
+            if (-not $path) { try { $path = [string]$p.Path } catch { } }
+        }
+        if ($ws -lt 40MB -and $priv -lt 40MB) { continue }
+        $label = $name
+        if ($path) { try { $vi = (Get-Item -LiteralPath $path -ErrorAction Stop).VersionInfo; if ($vi.FileDescription) { $label = $vi.FileDescription.Trim() } elseif ($vi.ProductName) { $label = $vi.ProductName.Trim() } } catch { } }
+        $kind = 'App'; $why = ''; $hint = ''
+        if ($name -eq 'msedge') {
+            $kind = 'Protected'; $label = 'Microsoft Edge'
+            $why = 'Your browser - and the window CleanIT itself runs in. Close tabs and windows you do not need yourself, or let Edge put them to sleep (tips below).'
+        }
+        elseif ($name -eq 'msedgewebview2') { $kind = 'Protected'; $label = 'Edge WebView2'; $why = 'Part of other apps (Outlook, Teams, widgets) - closing it would break them.' }
+        elseif (Test-NameLike $name $script:MemSecurityPatterns) { $kind = 'Security'; $why = 'Security, VPN or IT-management software - never closed.' }
+        elseif ($session0 -or ($script:MemSystemNames -contains $name) -or ($path -and $win -and $path.StartsWith($win, [StringComparison]::OrdinalIgnoreCase))) {
+            $kind = 'System'; $why = 'Part of Windows.'
+        }
+        elseif ($keep -contains $name) { $kind = 'Keep'; $why = 'On your Keep list - never closed from here.' }
+        elseif (-not $hasWin) { $kind = 'Background'; $why = 'Runs in the background without a window, so it is not closed from here. If you never need it, switch it off on the Startup page.' }
+        if (@('ms-teams', 'Teams', 'olk') -contains $name) { $hint = 'Built on the Edge engine. Quitting and reopening it once a day frees the memory it builds up.' }
+        elseif (($kind -eq 'App' -or $kind -eq 'Keep' -or $kind -eq 'Background') -and $priv -gt 1.5GB) { $hint = 'Uses a lot of memory. If it has been open for days, closing and reopening it usually frees most of that.' }
+        $out.Add([pscustomobject]@{
+            Key = $name; Label = $label; Kind = $kind; Why = $why; Hint = $hint; Count = $g.Count
+            WorkingSet = $ws; Private = $priv; HasWindow = $hasWin; Closable = ($kind -eq 'App')
+            Keepable = (@('App', 'Keep', 'Background') -contains $kind) })
+    }
+    @($out.ToArray() | Sort-Object WorkingSet -Descending | Select-Object -First 30)
+}
+
+function Get-MemoryReport {
+    $c = Get-MemoryCounters
+    $pf = Get-PageFileInfo
+    $mc = Get-MemoryCompression
+    $saved = Read-JsonFile (Get-StatePath 'memory')
+    $level = 'OK'; $verdict = 'Memory is fine right now.'
+    if ($c.CommitPct -ge 90) { $level = 'BAD'; $verdict = 'Memory is almost full - apps (and Edge tabs) are about to crash. Close something you do not need below.' }
+    elseif ($c.CommitPct -ge 80) { $level = 'WARN'; $verdict = 'Memory is getting tight. Closing an app or two you are not using will keep things smooth.' }
+    elseif ($c.RamPct -ge 85) { $level = 'INFO'; $verdict = 'RAM looks busy, but Windows still has room (it uses spare RAM as a cache on purpose). Nothing to fix right now.' }
+    $s = Get-Settings
+    [pscustomobject]@{
+        Counters = $c; Level = $level; Verdict = $verdict; PageFile = $pf
+        Compression = [pscustomobject]@{ Known = $mc.Known; On = $mc.On }
+        Changed = [pscustomobject]@{ PageFile = [bool]($saved -and $saved.PageFile); Compression = [bool]($saved -and ($null -ne $saved.Compression)) }
+        Apps = @(Get-MemoryApps); Keep = @($s.MemoryKeep); Watch = [bool](Get-ScheduledTask -TaskName $script:MemWatchTaskName -ErrorAction SilentlyContinue)
+    }
+}
+
+# Key: PageFile (On = let Windows manage it) or Compression. Originals are saved once and put back exactly.
+function Set-MemoryFix {
+    param([string]$Key, [bool]$On)
+    $file = Get-StatePath 'memory'
+    $saved = Read-JsonFile $file
+    $st = @{}; if ($saved) { foreach ($p in $saved.PSObject.Properties) { $st[$p.Name] = $p.Value } }
+    switch ($Key) {
+        'PageFile' {
+            if ($On) {
+                if (-not $st.ContainsKey('PageFile')) { $pf = Get-PageFileInfo; $st.PageFile = [pscustomobject]@{ Auto = $pf.Auto; Files = @($pf.Files) } }
+                Get-CimInstance Win32_ComputerSystem | Set-CimInstance -Property @{ AutomaticManagedPagefile = $true } -ErrorAction Stop
+                Write-Log 'Memory saver: page file set to "Let Windows manage it". Takes effect after a restart.' 'OK'
+            }
+            elseif ($st.ContainsKey('PageFile')) {
+                $orig = $st.PageFile
+                Get-CimInstance Win32_ComputerSystem | Set-CimInstance -Property @{ AutomaticManagedPagefile = [bool]$orig.Auto } -ErrorAction Stop
+                if (-not $orig.Auto) {
+                    Get-CimInstance Win32_PageFileSetting -ErrorAction SilentlyContinue | Remove-CimInstance -ErrorAction SilentlyContinue
+                    foreach ($f in @($orig.Files)) {
+                        if (-not $f) { continue }
+                        $n = New-CimInstance -ClassName Win32_PageFileSetting -Property @{ Name = [string]$f.Name } -ErrorAction Stop
+                        $n | Set-CimInstance -Property @{ InitialSize = [uint32]$f.Initial; MaximumSize = [uint32]$f.Max } -ErrorAction Stop
+                    }
+                }
+                $st.Remove('PageFile')
+                Write-Log 'Memory saver: page file put back as it was. Takes effect after a restart.' 'OK'
+            }
+        }
+        'Compression' {
+            if ($On) {
+                if (-not $st.ContainsKey('Compression')) { $st.Compression = [bool](Get-MemoryCompression).On }
+                Enable-MMAgent -MemoryCompression -ErrorAction Stop
+                Write-Log 'Memory saver: memory compression turned on. Takes effect after a restart.' 'OK'
+            }
+            elseif ($st.ContainsKey('Compression')) {
+                if (-not [bool]$st.Compression) { Disable-MMAgent -MemoryCompression -ErrorAction Stop }
+                $st.Remove('Compression')
+                Write-Log 'Memory saver: memory compression put back as it was. Takes effect after a restart.' 'OK'
+            }
+        }
+        default { throw "Unknown memory setting: $Key" }
+    }
+    Write-JsonFile $file ([pscustomobject]$st)
+}
+
+function Restore-MemoryFixes {
+    $saved = Read-JsonFile (Get-StatePath 'memory')
+    if (-not $saved) { Write-Log 'Memory saver: nothing to put back.'; return }
+    if ($saved.PageFile) { Set-MemoryFix 'PageFile' $false }
+    if ($null -ne $saved.Compression) { Set-MemoryFix 'Compression' $false }
+}
+
+# Asks the ticked apps to close, exactly like clicking their X (they can still ask to save). Never force-kills.
+# Protection is checked again right now - an app that became protected in the meantime is skipped.
+function Close-MemoryApps {
+    param([string[]]$Names)
+    $before = (Get-MemoryCounters).CommitUsed
+    $apps = @(Get-MemoryApps)
+    $asked = New-Object System.Collections.Generic.List[string]
+    foreach ($n in $Names) {
+        $a = $apps | Where-Object { $_.Key -eq $n } | Select-Object -First 1
+        if (-not $a) { continue }
+        if (-not $a.Closable) { Write-Log "Memory saver: $($a.Label) is protected - not closed." 'WARN'; continue }
+        foreach ($p in @(Get-Process -Name $n -ErrorAction SilentlyContinue)) {
+            if ($p.MainWindowHandle -ne [IntPtr]::Zero) { try { [void]$p.CloseMainWindow() } catch { } }
+        }
+        $asked.Add($n)
+        Write-Log "Memory saver: asked $($a.Label) to close." 'OK'
+    }
+    $deadline = (Get-Date).AddSeconds(15)
+    do {
+        Start-Sleep -Milliseconds 800
+        $open = @($asked | Where-Object { @(Get-Process -Name $_ -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero }).Count -gt 0 })
+    } while ($open.Count -and (Get-Date) -lt $deadline)
+    Start-Sleep -Seconds 2
+    $freed = [math]::Max([double]0, [double]$before - [double](Get-MemoryCounters).CommitUsed)
+    $closed = @($asked | Where-Object { $open -notcontains $_ })
+    foreach ($o in $open) { Write-Log "Memory saver: $o is still open - it may be asking you to save something. Check its window." 'WARN' }
+    Write-Log ('Memory saver: freed about {0}.' -f (Format-Size $freed)) 'OK'
+    [pscustomobject]@{ Closed = $closed; StillOpen = $open; Freed = $freed }
+}
+
+# Optional warning: a small check every 15 minutes for whoever is signed in. Shows a notification when
+# memory is almost full (at most every 30 minutes). Runs without admin rights; changes nothing.
+function Set-MemoryWatch {
+    param([bool]$On, [string]$SourceDir = (Split-Path -Parent $script:CorePath))
+    Unregister-ScheduledTask -TaskName $script:MemWatchTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    if (-not $On) { Write-Log 'Memory saver: low-memory warning turned off.' 'OK'; return }
+    $dest = Copy-AppFiles $SourceDir
+    $build = [int](Get-CimInstance Win32_OperatingSystem).BuildNumber
+    $ps = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$dest`" -MemoryCheck"
+    # Windows 11 22H2+: conhost --headless runs PowerShell without the brief window flash
+    if ($build -ge 22621) { $action = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument "--headless powershell.exe $ps" }
+    else { $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $ps }
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 15)
+    $principal = New-ScheduledTaskPrincipal -GroupId 'S-1-5-32-545' -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName $script:MemWatchTaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
+        -Description 'CleanIT: warns when memory is almost full. Changes nothing.' -Force | Out-Null
+    Write-Log 'Memory saver: low-memory warning turned on (checks every 15 minutes).' 'OK'
+}
+
+# Run by the watch task as the signed-in user.
+function Invoke-MemoryCheck {
+    $c = Get-MemoryCounters
+    if ($c.CommitPct -lt 90) { return }
+    $stamp = Join-Path $env:LOCALAPPDATA 'CleanIT\memory-warning.txt'
+    if (Test-Path -LiteralPath $stamp) {
+        try { if (((Get-Date) - (Get-Item -LiteralPath $stamp).LastWriteTime).TotalMinutes -lt 30) { return } } catch { }
+    }
+    $top = @(Get-MemoryApps | Where-Object { $_.Kind -ne 'System' -and $_.Kind -ne 'Security' }) | Select-Object -First 1
+    $msg = "Memory is $($c.CommitPct)% full - apps may crash soon."
+    if ($top) { $msg += ' Biggest: {0} ({1}).' -f $top.Label, (Format-Size $top.WorkingSet) }
+    $msg += ' Open CleanIT > Memory to free some.'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $stamp) -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-Content -LiteralPath $stamp -Value (Get-Date).ToString('s') -ErrorAction SilentlyContinue
+    Show-Notification 'CleanIT - memory almost full' $msg
+}
+
 function Get-DashboardData {
     $issues = New-Object System.Collections.Generic.List[object]
     $score = 100
@@ -3523,6 +3793,11 @@ function Get-DashboardData {
     $startup = @(Get-StartupItems -Quick | Where-Object { $_.Enabled }).Count
     if ($startup -gt 10) { & $add 10 'WARN' "$startup apps launch at sign-in - slows startup" 'Startup' }
     elseif ($startup -gt 6) { & $add 5 'INFO' "$startup apps launch at sign-in" 'Startup' }
+    $mem = Get-MemoryCounters
+    if ($mem.CommitPct -ge 90) { & $add 10 'BAD' "Memory is $($mem.CommitPct)% full - apps and browser tabs may crash. Close something on the Memory page" 'Memory' }
+    elseif ($mem.CommitPct -ge 80) { & $add 3 'WARN' "Memory is $($mem.CommitPct)% full - getting tight" 'Memory' }
+    $pfi = Get-PageFileInfo
+    if ($pfi.Level -ne 'OK') { & $add 8 $pfi.Level ("Page file: " + $pfi.Text) 'Memory' }
 
     $hist = @(Get-CleanHistory)
     $last = $hist | Select-Object -Last 1
@@ -4115,6 +4390,7 @@ function Install-CleanITApp {
 function Uninstall-CleanITApp {
     Remove-Schedule
     Unregister-ScheduledTask -TaskName 'CleanIT Full Scan' -Confirm:$false -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $script:MemWatchTaskName -Confirm:$false -ErrorAction SilentlyContinue
     foreach ($t in @((Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\CleanIT.lnk'),
                      (Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'CleanIT.lnk'))) {
         Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue

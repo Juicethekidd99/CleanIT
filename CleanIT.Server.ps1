@@ -552,6 +552,35 @@ $script:Actions = @{
         } }
     perfRestore = @{ Name = 'Putting performance settings back'; Work = { param($P) Restore-AllPerf; [pscustomobject]@{ items = @(Get-PerfStatus) } } }
 
+    memStatus = @{ Name = 'Checking memory'
+        Work = { param($P) Get-MemoryReport }
+        Finalize = {
+            param($Out)
+            $r = $Out | Select-Object -Last 1
+            # the page may only ask to close apps from this list, and only the ones that were closable
+            $script:Cache.MemClosable = @($r.Apps | Where-Object { $_.Closable } | ForEach-Object { $_.Key })
+            $r
+        } }
+    memClose = @{ Name = 'Closing the apps you picked'
+        Prep = {
+            param($A)
+            $names = @(foreach ($n in @($A.names)) { if (@($script:Cache.MemClosable) -contains [string]$n) { [string]$n } })
+            if (-not $names.Count) { throw 'Pick at least one app that can be closed.' }
+            @{ Names = $names }
+        }
+        Work = { param($P) Close-MemoryApps $P.Names } }
+    memFix = @{ Name = 'Changing memory settings'
+        Prep = {
+            param($A)
+            if (@('PageFile', 'Compression') -notcontains [string]$A.key) { throw 'Unknown memory setting.' }
+            @{ Key = [string]$A.key; On = [bool]$A.on }
+        }
+        Work = { param($P) Set-MemoryFix $P.Key $P.On; Get-MemoryReport } }
+    memRestore = @{ Name = 'Putting memory settings back'; Work = { param($P) Restore-MemoryFixes; Get-MemoryReport } }
+    memWatch = @{ Name = 'Saving low-memory warning'
+        Prep = { param($A) @{ On = [bool]$A.on; AppDir = $script:AppDir } }
+        Work = { param($P) Set-MemoryWatch -On $P.On -SourceDir $P.AppDir } }
+
     health = @{ Name = 'Health report'; Work = { param($P) [pscustomobject]@{ text = (Get-HealthReport) } } }
     shutdowns = @{ Name = 'Reading shutdown history'; Work = { param($P) Get-ShutdownHistory } }
     optimize = @{ Name = 'Optimizing drives'; Work = { param($P) Invoke-DriveOptimize } }
@@ -949,6 +978,9 @@ function Invoke-Api {
                 }
                 if ($null -ne $body.WingetExclude) {
                     $s.WingetExclude = @($body.WingetExclude | Where-Object { Test-SafeId $_ '^[A-Za-z0-9][A-Za-z0-9._+\-]{0,120}$' })
+                }
+                if ($null -ne $body.MemoryKeep) {
+                    $s.MemoryKeep = @($body.MemoryKeep | Where-Object { Test-SafeId $_ '^[A-Za-z0-9][A-Za-z0-9._ +\-]{0,80}$' })
                 }
                 Save-Settings $s
                 Send-Json $Req $s
