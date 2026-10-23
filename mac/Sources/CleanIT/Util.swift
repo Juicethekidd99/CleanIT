@@ -49,7 +49,7 @@ func shortDate(_ d: Date?) -> String {
 enum Settings {
     static let defaults: JSON = [
         "ScheduleDay": "Sunday", "ScheduleTime": "11:00", "ScheduleUpdates": false,
-        "BrewExclude": [String](), "UpdateCheck": true, "FleetPath": ""
+        "BrewExclude": [String](), "UpdateCheck": true, "FleetPath": "", "MemoryKeep": Memory.defaultKeep
     ]
     private static let lock = NSLock()
     static func load() -> JSON {
@@ -63,7 +63,11 @@ enum Settings {
     static func patch(_ p: JSON) -> JSON {
         var s = load()
         lock.lock(); defer { lock.unlock() }
-        for (k, v) in p where defaults[k] != nil || k == "ShowApple" { s[k] = v }
+        for (k, v) in p where defaults[k] != nil || k == "ShowApple" {
+            if k == "MemoryKeep" {   // bundle ids / program names only
+                s[k] = ((v as? [Any]) ?? []).compactMap { $0 as? String }.filter { $0.range(of: #"^[A-Za-z0-9][A-Za-z0-9._ +()-]{0,120}$"#, options: .regularExpression) != nil }
+            } else { s[k] = v }
+        }
         writeJSON(Paths.settingsFile, s)
         return s
     }

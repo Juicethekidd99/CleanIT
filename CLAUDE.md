@@ -33,6 +33,14 @@ Roadmap: `ROADMAP.md`.
   shAdmin); the original value (or null = not set) is saved once in `State/performance.json` and turning off restores it
   exactly (null -> `defaults delete`). `Perf.checks()` is read-only. Never apply the admin (pmset) item on the dev Mac
   without asking; test round trips on a harmless `defaults` item.
+- `Memory.swift`: Memory saver. Real warning = memory pressure (`kern.memorystatus_vm_pressure_level`) + room for swap.
+  Processes are grouped by their outermost .app (helpers count as their app); footprint via `proc_pid_rusage`
+  (other users' processes are skipped). Kinds: Protected (Claude app/Claude Code = anything `com.anthropic.*` or in
+  ~/Library/Application Support/Claude, CleanIT, Finder, Dock), Security (`securityWords`), Keep (`Settings.MemoryKeep`,
+  Dock apps only), App (Dock apps - the only closable kind), System, Background. Quitting = `NSRunningApplication.terminate()`
+  only (Cmd-Q; never `forceTerminate`, never automatic), keys must come from `Memory.closable` (last list) and protection
+  is re-checked. `CLEANIT_MEM_MIN_MB` = test hook (lists small apps). Optional LaunchAgent `...cleanit.memwatch` runs
+  `--memory-check` every 15 min: notification only, throttled 30 min.
 - Cloud folders (OneDrive in ~/Library/CloudStorage) can block file calls for minutes: fleet writes run on
   `Fleet.queue` (fire-and-forget in the app, `wait:` in the CLI), reads and the reachability check have timeouts.
 - Don't trigger permission prompts from the Dashboard/Security (login items via System Events only on the Startup page).

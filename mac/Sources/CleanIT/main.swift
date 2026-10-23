@@ -10,6 +10,8 @@
 //   CleanIT --fleet                     write this Mac's report to the fleet folder now
 //   CleanIT --performance               turn on the recommended performance settings (reversible)
 //   CleanIT --undo-performance          put every performance setting CleanIT changed back
+//   CleanIT --memory                    memory report: pressure, swap, biggest apps (changes nothing)
+//   CleanIT --memory-check              used by the optional low-memory warning (notification only)
 //   --silent: no questions, no output except errors; --scheduled: marks the run as the weekly clean and notifies.
 import AppKit
 
@@ -20,7 +22,7 @@ func value(_ s: String) -> String? { args.firstIndex(of: s).flatMap { $0 + 1 < a
 
 if let dir = value("--make-icon") { Icon.write(to: dir); exit(0) }
 
-let cli = ["--scan", "--clean", "--list-categories", "--report", "--updates", "--startup", "--fleet", "--performance", "--undo-performance"].contains { has($0) }
+let cli = ["--scan", "--clean", "--list-categories", "--report", "--updates", "--startup", "--fleet", "--performance", "--undo-performance", "--memory", "--memory-check"].contains { has($0) }
 if cli {
     Log.echo = !has("--silent")
     let keys = value("--categories").map { $0.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) } }
@@ -61,6 +63,17 @@ if cli {
     }
     if has("--undo-performance") {
         do { try Perf.restoreAll() } catch { print(error.localizedDescription); exit(1) }
+    }
+    if has("--memory-check") { Memory.check() }
+    if has("--memory") {
+        let r = Memory.report(); let c = r["Counters"] as! JSON
+        print("Memory pressure : \(c["Pressure"]!)  (\(c["UsedPct"]!)% used of \(fmtSize(i64(c["RamTotal"]))))")
+        print("Swap            : \(fmtSize(i64(c["SwapUsed"])))   compressed: \(fmtSize(i64(c["Compressed"])))")
+        print("Verdict         : \(r["Verdict"]!)")
+        print("")
+        for a in (r["Apps"] as! [JSON]).prefix(15) {
+            print("\(fmtSize(i64(a["WorkingSet"])).padding(toLength: 10, withPad: " ", startingAt: 0)) \((a["Kind"] as! String).padding(toLength: 11, withPad: " ", startingAt: 0)) \(a["Label"]!)")
+        }
     }
     if has("--clean") || has("--fleet") { Fleet.writeReport(wait: 120) }
     if has("--report") {

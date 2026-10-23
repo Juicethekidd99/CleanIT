@@ -39,6 +39,8 @@ and skip the snake oil.
       weekly clean, CLI
 - [x] Fleet: same OneDrive "CleanIT Fleet" folder and report format as Windows; Macs and PCs on one page
 - [x] Performance page (like Windows 2.8.0): speed check + reversible settings, honest "what we do not do" list
+- [x] Memory saver: memory pressure, biggest apps, quit only ticked apps gently (protected: macOS, security tools, Claude,
+      Keep list), room-for-swap check, optional low-memory warning
 - [ ] Self-updater from GitHub releases (zip with CleanIT.app; verify signature)
 - [ ] Developer ID signing + notarization so the download opens without warnings
 - [ ] Unavailable simulators (`xcrun simctl delete unavailable`), old iOS backups viewer, Mac App Store updates via `mas`

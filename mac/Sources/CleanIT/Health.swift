@@ -206,6 +206,9 @@ enum Dashboard {
         if ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical {
             issue("WARN", "The Mac is too hot and slowing itself down.", "Performance", 5)
         }
+        let mem = Memory.counters()
+        if mem["Pressure"] as? String == "critical" { issue("BAD", "Memory is critically full - macOS may start closing apps. Quit something on the Memory page.", "Memory", 10) }
+        else if mem["Pressure"] as? String == "warning" { issue("WARN", "Memory is getting tight.", "Memory", 3) }
         if Perf.acLowPower() == "1" { issue("INFO", "Low Power Mode is on even when plugged in.", "Performance", 3) }
         if Int(ProcessInfo.processInfo.systemUptime) > 21 * 86400 { issue("INFO", "Not restarted for over 3 weeks - a restart applies updates and frees memory.", nil, 2) }
         if !hasFullDiskAccess() { issue("INFO", "CleanIT has no Full Disk Access, so Safari, Mail and the Trash can't be scanned. Optional - see Settings.", "Settings", 0) }

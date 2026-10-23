@@ -46,7 +46,9 @@ const ICONS = {
   chip: 'M7 7h10v10H7zM10 10h4v4h-4zM9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4',
   file: 'M6 3h8l5 5v13H6zM14 3v5h5',
   cloud: 'M7 18a5 5 0 1 1 .9-9.9A6 6 0 0 1 19 10a4 4 0 0 1 0 8z',
-  speed: 'M4.6 18a9 9 0 1 1 14.8 0M12 14l4-5'
+  speed: 'M4.6 18a9 9 0 1 1 14.8 0M12 14l4-5',
+  memory: 'M3 8h18v8H3zM7 11v2M11 11v2M15 11v2M6 16v3M10 16v3M14 16v3M18 16v3',
+  lock: 'M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3'
 };
 function icon(name) {
   const ns = 'http://www.w3.org/2000/svg';
@@ -128,7 +130,7 @@ function openThing(what, extra) { return api('/api/open', Object.assign({ what }
 const S = { page: 'dashboard', state: null, busy: {}, failed: {}, cache: {}, sel: {}, tab: {}, progress: {} };
 const pages = {};
 const NAV = [
-  ['dashboard', 'Dashboard', 'home'], ['clean', 'Clean', 'clean'], ['disk', 'Disk', 'disk'], ['startup', 'Startup', 'startup'], ['performance', 'Performance', 'speed'],
+  ['dashboard', 'Dashboard', 'home'], ['clean', 'Clean', 'clean'], ['disk', 'Disk', 'disk'], ['startup', 'Startup', 'startup'], ['performance', 'Performance', 'speed'], ['memory', 'Memory', 'memory'],
   ['apps', 'Apps', 'apps'], ['updates', 'Updates', 'updates'], ['security', 'Security', 'security'],
   ['health', 'Health', 'health'], ['fleet', 'Fleet', 'fleet'], ['settings', 'Settings', 'settings']
 ];
@@ -657,6 +659,103 @@ async function applyPerf(changes) {
     S.cache.perf.items = (await run('perfApply', { changes }, prog('perfSet'))).items;
     S.cache.perfChanges = {};
     toast('Done - settings applied.');
+  });
+}
+
+// ----- Memory saver: memory pressure, the biggest apps, and quitting ONLY apps the user ticks - gently (Cmd-Q).
+const MEM_KIND = { App: ['INFO', ''], Keep: ['accent', 'Keep'], Background: ['INFO', 'background'], Protected: ['OK', 'protected'], Security: ['OK', 'security / IT'], System: ['INFO', 'macOS'] };
+pages.memory = {
+  title: 'Memory saver',
+  render(root) {
+    const m = S.cache.mem;
+    if (!m) autoLoad('mem', loadMem);
+    if (!m) { root.append(h('div', { class: 'empty', text: 'Checking memory...' })); return; }
+    const c = m.Counters;
+    const sel = S.sel.mem = S.sel.mem || new Set();
+    for (const k of [...sel]) if (!m.Apps.some(a => a.Key === k && a.Closable)) sel.delete(k);
+    const color = m.Level === 'BAD' ? 'var(--bad)' : m.Level === 'WARN' ? 'var(--warn)' : 'var(--ok)';
+    const pct = Math.max(0, Math.min(100, c.UsedPct));
+
+    // 1) Memory pressure - the number macOS itself acts on
+    root.append(h('div', { class: 'card protect-hero' },
+      h('div', { class: 'shield ' + (m.Level === 'BAD' ? 'bad' : m.Level === 'WARN' ? 'warn' : 'ok') }, icon('memory')),
+      h('div', { style: 'flex:1' },
+        h('h2', { style: 'margin:0 0 4px', text: 'Memory pressure: ' + c.Pressure }),
+        h('div', { class: 'bar', style: 'height:12px;margin:8px 0' }, h('i', { style: 'width:' + pct + '%;background:' + color })),
+        h('div', { text: m.Verdict }),
+        h('div', { class: 'muted small', style: 'margin-top:6px', text: pct + '% of ' + fmtSize(c.RamTotal) + ' in use. Swap: ' + fmtSize(c.SwapUsed) + '. Compressed: ' + fmtSize(c.Compressed) + '. macOS closes apps when pressure turns critical and swap has no room to grow.' }),
+        h('div', { class: 'row', style: 'margin-top:10px' }, btn('Check again', loadMem, 'link', 'mem'), btn('Open Activity Monitor', () => openThing('app', { name: 'com.apple.ActivityMonitor' }), 'link')))));
+
+    // 2) What is using memory
+    const n = sel.size, sum = m.Apps.filter(a => sel.has(a.Key)).reduce((t, a) => t + a.WorkingSet, 0);
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'What is using memory', h('small', { text: 'tick only what you do not need right now' })),
+      h('p', { class: 'muted small', text: 'Ticked apps are asked to quit - exactly like pressing Cmd-Q. If something is not saved, the app asks you first. Nothing is ever force-quit, and nothing is closed unless you tick it. Locked items can never be ticked.' }),
+      m.Apps.map(a => {
+        const k = MEM_KIND[a.Kind] || MEM_KIND.App;
+        const kept = a.Kind === 'Keep';
+        return h('div', { class: 'opt' },
+          a.Closable ? h('input', { type: 'checkbox', checked: sel.has(a.Key), onchange: e => { e.target.checked ? sel.add(a.Key) : sel.delete(a.Key); render(); } })
+                     : h('span', { class: 'lockicon', title: a.Why }, icon('lock')),
+          h('div', { class: 't' },
+            h('b', { text: a.Label + (a.Count > 1 ? '  (' + a.Count + ' parts)' : '') }),
+            a.Why ? h('div', { class: 'small muted', text: a.Why }) : null,
+            a.Hint ? h('div', { class: 'small c-WARN', text: a.Hint }) : null),
+          k[1] ? h('span', { class: 'pill ' + k[0], text: k[1] }) : null,
+          h('b', { style: 'min-width:80px;text-align:right', text: fmtSize(a.WorkingSet) }),
+          a.Keepable && (a.Kind !== 'Background') ? btn(kept ? 'Remove from Keep' : 'Keep', () => setMemKeep(a.Key, !kept), 'link') : h('span', { style: 'min-width:60px' }));
+      }),
+      h('div', { class: 'row', style: 'margin-top:12px' },
+        btn(n ? 'Quit ' + n + ' app' + (n > 1 ? 's' : '') + ' (about ' + fmtSize(sum) + ')' : 'Quit ticked apps', closeMemApps, 'primary', 'memClose', !n),
+        progLine('memClose'))));
+
+    // 3) Room for swap + browser tips
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Keep it from crashing'),
+      h('div', { class: 'opt' },
+        h('span', { class: 'pill ' + m.SwapRoom.Level, text: m.SwapRoom.Level === 'OK' ? 'good' : 'fix this' }),
+        h('div', { class: 't' }, h('b', { text: 'Room for swap' }), h('div', { text: m.SwapRoom.Text })),
+        m.SwapRoom.Level !== 'OK' ? btn('Clean junk', () => go('clean'), 'link') : null),
+      bullets([
+        'Chrome / Edge / Brave: Settings > Performance > turn on Memory Saver - tabs you are not looking at use almost nothing.',
+        'Safari: close tabs you are done with; each tab keeps its page in memory.',
+        'Work sites that break when a tab sleeps: add them to the browser\'s "Always keep these sites active" list.',
+        'Restart the Mac now and then - it clears swap and anything that slowly grew.'
+      ])));
+
+    // 4) Optional warning
+    root.append(h('div', { class: 'card' }, h('div', { class: 'opt' },
+      toggle(m.Watch, v => task('memWatch', async () => { await run('memWatch', { on: v }); S.cache.mem.Watch = v; toast(v ? 'You will get a notification when memory is almost full.' : 'Low-memory warning off.'); }), S.busy.memWatch),
+      h('div', { class: 't' }, h('b', { text: 'Warn me when memory is almost full' }),
+        h('div', { text: 'Checks every 15 minutes and shows a notification when memory pressure rises, with the app using the most - so you can quit something before macOS does it for you. It never quits anything itself.' })))));
+
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'What the Memory saver does not do'),
+      bullets([
+        'No "RAM cleaner" or purge - macOS keeps spare memory full of cached data on purpose; emptying it makes the next apps slower to open.',
+        'Never quits anything by itself, and never force-quits - apps always get the chance to ask you to save.',
+        'Never touches macOS, security / VPN / device-management tools, Claude, or anything on your Keep list.'
+      ])));
+  }
+};
+function loadMem() { return task('mem', async () => { S.cache.mem = await run('memStatus'); }); }
+async function setMemKeep(key, on) {
+  const keep = new Set(S.cache.mem.Keep || []);
+  if (on) keep.add(key); else keep.delete(key);
+  await saveSettings({ MemoryKeep: [...keep] });
+  if (S.sel.mem) S.sel.mem.delete(key);
+  loadMem();
+}
+async function closeMemApps() {
+  const apps = S.cache.mem.Apps.filter(a => S.sel.mem.has(a.Key) && a.Closable);
+  if (!apps.length) return;
+  if (!await confirmBox('Quit ' + apps.length + ' app' + (apps.length > 1 ? 's' : '') + '?', [
+    bullets(apps.map(a => a.Label + ' - ' + fmtSize(a.WorkingSet))),
+    h('p', { text: 'Each app is asked to quit, exactly like pressing Cmd-Q. If something is not saved, it will ask you first - nothing is forced.' })
+  ], 'Quit them')) return;
+  await task('memClose', async () => {
+    const r = await run('memClose', { names: apps.map(a => a.Key) }, prog('memClose'));
+    S.sel.mem = new Set();
+    const open = (r.StillOpen || []).map(k => (apps.find(a => a.Key === k) || {}).Label || k);
+    toast('Freed about ' + fmtSize(r.Freed) + '.' + (open.length ? ' Still open (maybe asking you to save): ' + open.join(', ') : ''), open.length ? 'warn' : '');
+    S.cache.mem = await run('memStatus');
   });
 }
 

@@ -190,7 +190,7 @@ enum Perf {
         if free >= 0 && free < 15 {
             out.append(check("WARN", "Memory is tight (\(free)% free of \(ram))",
                              "Apps are competing for memory, which slows everything down. Quit apps and browser tabs you don't need. If this is normal for you, the Mac needs more memory - no app can \"clean\" that.",
-                             app("Open Activity Monitor", "com.apple.ActivityMonitor")))
+                             page("Memory saver", "memory")))
         } else if swapMB > 2048 {
             out.append(check("INFO", "macOS is using \(fmtSize(Int64(swapMB * 1048576))) of swap", "Some memory was moved to the disk. A restart clears it; if it keeps growing, quit heavy apps or browser tabs."))
         } else if free >= 0 {

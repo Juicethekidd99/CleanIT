@@ -39,6 +39,7 @@ no open port.
 | Disk | Space analyzer, large-file finder ("not opened in N days"), duplicate finder (SHA-256, hard-link aware). Files only go to the Trash |
 | Startup | Launch Agents, Launch Daemons, Login Items with code-signature check. Uses launchd's own on/off switch (plists are never deleted). Undo all |
 | Performance | Speed check (screen refresh rate vs. its maximum, Low Power Mode, overheating, memory pressure/swap, busy background apps, startup items, free space, uptime, mouse acceleration for gaming) and reversible settings: full speed while charging, no .DS_Store on network drives, shorter window/Dock/Mission Control animations. One click turns on the recommended ones; "Put everything back" restores the originals. No RAM purging or fake boosters |
+| Memory | Memory pressure (what macOS itself acts on), swap, compressed memory and the apps using the most, grouped by app. Quits only apps you tick, gently - exactly like Cmd-Q, so unsaved work asks first; never force-quit, never automatic. macOS, security/VPN/device-management tools, Claude, CleanIT and your Keep list (browsers, Mail, Outlook, Teams, Zoom, Xcode, Terminal, Office by default) can never be ticked. Checks there is room for swap; optional warning when pressure rises. No purge / RAM cleaner |
 | Apps | Uninstaller (app to the Trash) + strict leftover finder (exact bundle id or app name in ~/Library and /Library) |
 | Updates | macOS Software Update with Important/Recommended/Optional advice; Homebrew formulae and casks with a "never update" list |
 | Security | macOS support status, FileVault, firewall, SIP, Gatekeeper, automatic updates, XProtect, auto-login, SSH/Screen Sharing, unsigned startup items |
@@ -75,6 +76,7 @@ $C --updates                                # Homebrew upgrades (honours the "ne
 $C --fleet                                  # write this Mac's report to the fleet folder now
 $C --performance                            # turn on the recommended performance settings (reversible)
 $C --undo-performance                       # put them back
+$C --memory                                 # memory report: pressure, swap, biggest apps (changes nothing)
 ```
 
 ## Fleet with your PCs
