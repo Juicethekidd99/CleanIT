@@ -49,6 +49,15 @@ Roadmap: `ROADMAP.md`.
   switch off restores that original. Defender controls only apply when `AMRunningMode` is Normal (another AV = passive).
   Quarantine restore only accepts threat names from the server's last `threats` result (`$script:Cache.Quarantine`).
   Never change Defender settings, start scans, enable Sandbox or run an offline scan on the dev PC without asking.
+- Memory saver (Memory page): crashes come from COMMIT (RAM + page file) running out, not "RAM 90%" - show
+  `Get-MemoryCounters` CommitPct. `Get-MemoryApps` groups processes by name and classifies: Protected (msedge = the work
+  browser AND the CleanIT window; msedgewebview2), Security (`$script:MemSecurityPatterns`: AV/EDR/VPN/RMM/IT agents),
+  System (session 0, `$script:MemSystemNames`, anything under %SystemRoot%, powershell), Keep (`Settings.MemoryKeep`),
+  Background (no window) and App (the only closable kind). `Close-MemoryApps` re-checks protection, then only calls
+  CloseMainWindow (= clicking X, unsaved work prompts) - NEVER Stop-Process/kill, never automatic. The server only accepts
+  names from `$script:Cache.MemClosable` (last memStatus). Page file -> "Let Windows manage" and memory compression on
+  are reversible (`State\memory.json`, restart needed). `CleanIT Memory Watch` task (Users, every 15 min, -MemoryCheck)
+  only shows a notification at 90% commit (throttled 30 min via %LOCALAPPDATA%). Still no RAM cleaner / EmptyWorkingSet.
 - Performance page: `$script:PerfItems` (Reg items with On/Off data + `UnsetIsOn`, or custom kinds PowerMode /
   MouseAccel / WindowedOpt via `CleanIT.Perf` = powrprof overlay + SystemParametersInfo). Originals saved once per item
   in `State\performance.json`; turning off with a saved original restores it exactly. `DirectXUserGlobalSettings` holds
@@ -61,6 +70,7 @@ Roadmap: `ROADMAP.md`.
 - Keep ALL source files **ASCII-only**, including web files (use \u escapes / HTML entities).
 - UI: data from Windows goes into the DOM via textContent only (the `h()` helper) - never innerHTML.
 - Never delete through reparse points; never touch event logs; **no registry cleaner**, no RAM/game "boosters".
+- Never kill processes. The only way CleanIT closes an app is the Memory saver's CloseMainWindow on apps the user ticked.
 - Anything destructive: preview first, explicit confirmation in the UI, logged. Files go to the Recycle Bin;
   registry keys are `reg export`ed first.
 - Exception: the Free-up-space assistant deletes permanently (so space is really freed), but only plain FILES directly in

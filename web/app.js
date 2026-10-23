@@ -39,6 +39,8 @@ const ICONS = {
   security: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z',
   protect: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6zM12 8v8M8 12h8',
   speed: 'M4.6 18a9 9 0 1 1 14.8 0M12 14l4-5',
+  memory: 'M3 8h18v8H3zM7 11v2M11 11v2M15 11v2M6 16v3M10 16v3M14 16v3M18 16v3',
+  lock: 'M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3',
   health: 'M3 12h4l2-5 4 10 2-5h6',
   fleet: 'M3 5h8v6H3zM13 5h8v6h-8zM8 15h8v6H8zM7 11v2h10v-2M12 13v2',
   settings: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
@@ -129,7 +131,7 @@ function openThing(what, extra) { return api('/api/open', Object.assign({ what }
 const S = { page: 'dashboard', state: null, busy: {}, failed: {}, cache: {}, sel: {}, tab: {}, progress: {} };
 const pages = {};
 const NAV = [
-  ['dashboard', 'Dashboard', 'home'], ['clean', 'Clean', 'clean'], ['disk', 'Disk', 'disk'], ['startup', 'Startup', 'startup'], ['performance', 'Performance', 'speed'],
+  ['dashboard', 'Dashboard', 'home'], ['clean', 'Clean', 'clean'], ['disk', 'Disk', 'disk'], ['startup', 'Startup', 'startup'], ['performance', 'Performance', 'speed'], ['memory', 'Memory', 'memory'],
   ['apps', 'Apps', 'apps'], ['drivers', 'Drivers', 'chip'], ['updates', 'Updates', 'updates'], ['privacy', 'Privacy', 'privacy'], ['security', 'Security', 'security'], ['protect', 'Protect', 'protect'],
   ['health', 'Health', 'health'], ['fleet', 'Fleet', 'fleet'], ['settings', 'Settings', 'settings']
 ];
@@ -805,6 +807,121 @@ async function applyPerf(changes) {
     const restart = changes.some(c => (S.cache.perf.items.find(s => s.Key === c.key) || {}).Restart);
     toast(restart ? 'Done. Restart the PC for the graphics setting to take effect.' : 'Done - settings applied.');
   });
+}
+
+// ----- Memory saver: real usage (commit), crash protection, and closing ONLY apps the user ticks - gently.
+const MEM_KIND = { App: ['INFO', ''], Keep: ['accent', 'Keep'], Background: ['INFO', 'background'], Protected: ['OK', 'protected'], Security: ['OK', 'security / IT'], System: ['INFO', 'Windows'] };
+pages.memory = {
+  title: 'Memory saver',
+  render(root) {
+    const m = S.cache.mem;
+    if (!m) autoLoad('mem', loadMem);
+    if (!m) { root.append(h('div', { class: 'empty', text: 'Checking memory...' })); return; }
+    const c = m.Counters;
+    const sel = S.sel.mem = S.sel.mem || new Set();
+    for (const k of [...sel]) if (!m.Apps.some(a => a.Key === k && a.Closable)) sel.delete(k);
+
+    // 1) The real meter
+    const pct = Math.min(100, c.CommitPct);
+    root.append(h('div', { class: 'card protect-hero' },
+      h('div', { class: 'shield ' + (m.Level === 'BAD' ? 'bad' : m.Level === 'WARN' ? 'warn' : 'ok') }, icon('memory')),
+      h('div', { style: 'flex:1' },
+        h('h2', { style: 'margin:0 0 4px', text: 'Memory in use: ' + pct + '%' }),
+        h('div', { class: 'bar', style: 'height:12px;margin:8px 0' }, h('i', { style: 'width:' + pct + '%;background:' + (m.Level === 'BAD' ? 'var(--bad)' : m.Level === 'WARN' ? 'var(--warn)' : 'var(--ok)') })),
+        h('div', { text: m.Verdict }),
+        h('div', { class: 'muted small', style: 'margin-top:6px', text: fmtSize(c.CommitUsed) + ' of ' + fmtSize(c.CommitLimit) + ' that Windows can hand out (RAM + page file). Apps crash when this reaches 100%. RAM alone: ' + c.RamPct + '% of ' + fmtSize(c.RamTotal) + '.' }),
+        h('div', { class: 'row', style: 'margin-top:10px' }, btn('Check again', loadMem, 'link', 'mem')))));
+
+    // 2) What is using memory
+    const n = sel.size, sum = m.Apps.filter(a => sel.has(a.Key)).reduce((t, a) => t + a.WorkingSet, 0);
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'What is using memory', h('small', { text: 'tick only what you do not need right now' })),
+      h('p', { class: 'muted small', text: 'Ticked apps are asked to close - exactly like clicking their X. If something is not saved, the app asks you first. Nothing is ever forced closed, and nothing is closed unless you tick it. Locked items can never be ticked.' }),
+      m.Apps.map(a => {
+        const k = MEM_KIND[a.Kind] || MEM_KIND.App;
+        const kept = a.Kind === 'Keep';
+        return h('div', { class: 'opt' },
+          a.Closable ? h('input', { type: 'checkbox', checked: sel.has(a.Key), onchange: e => { e.target.checked ? sel.add(a.Key) : sel.delete(a.Key); render(); } })
+                     : h('span', { title: a.Why, style: 'width:16px;display:inline-flex;color:var(--muted)' }, icon('lock')),
+          h('div', { class: 't' },
+            h('b', { text: a.Label + (a.Count > 1 ? '  (' + a.Count + ' parts)' : '') }),
+            a.Why ? h('div', { class: 'small muted', text: a.Why }) : null,
+            a.Hint ? h('div', { class: 'small c-WARN', text: a.Hint }) : null),
+          k[1] ? h('span', { class: 'pill ' + k[0], text: k[1] }) : null,
+          h('b', { style: 'min-width:80px;text-align:right', text: fmtSize(a.WorkingSet) }),
+          a.Keepable ? btn(kept ? 'Remove from Keep' : 'Keep', () => setMemKeep(a.Key, !kept), 'link') : h('span', { style: 'min-width:60px' }));
+      }),
+      h('div', { class: 'row', style: 'margin-top:12px' },
+        btn(n ? 'Close ' + n + ' app' + (n > 1 ? 's' : '') + ' (about ' + fmtSize(sum) + ')' : 'Close ticked apps', closeMemApps, 'primary', 'memClose', !n),
+        progLine('memClose'))));
+
+    // 3) Crash protection (reversible)
+    const pf = m.PageFile, mc = m.Compression;
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Crash protection', h('small', { text: 'lets Windows slow down instead of crashing apps' })),
+      h('div', { class: 'opt' },
+        h('span', { class: 'pill ' + pf.Level, text: pf.Level === 'OK' ? 'good' : 'fix this' }),
+        h('div', { class: 't' }, h('b', { text: 'Page file' + (pf.SizeBytes > 0 ? ' (' + fmtSize(pf.SizeBytes) + ' now)' : '') }), h('div', { text: pf.Text })),
+        pf.Fixable && pf.State !== 'Auto' ? btn('Let Windows manage it', () => memFix('PageFile', true), 'primary', 'memFix') : null),
+      mc.Known ? h('div', { class: 'opt' },
+        h('span', { class: 'pill ' + (mc.On ? 'OK' : 'WARN'), text: mc.On ? 'good' : 'fix this' }),
+        h('div', { class: 't' }, h('b', { text: 'Memory compression' }),
+          h('div', { text: mc.On ? 'On - Windows squeezes memory that is not in use, so roughly a third more fits in RAM.' : 'Off (some tweak tools switch it off). Turning it on lets roughly a third more fit in RAM - a big help with 8 GB.' })),
+        !mc.On ? btn('Turn on', () => memFix('Compression', true), 'primary', 'memFix') : null) : null,
+      (m.Changed.PageFile || m.Changed.Compression) ? h('div', { class: 'row end' }, btn('Put these back as they were', async () => {
+        if (!await confirmBox('Put memory settings back?', 'The page file and memory compression go back to exactly how they were before CleanIT changed them. Takes effect after a restart.', 'Put back')) return;
+        await task('memFix', async () => { S.cache.mem = await run('memRestore'); toast('Put back - restart to finish.'); });
+      }, 'link', 'memFix')) : null));
+
+    // 4) Edge (always protected) - the settings that matter on 8 GB
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'Make Edge use less memory', h('small', { text: 'Edge is never closed from here' })),
+      bullets([
+        'edge://settings/system - turn on "Save resources with sleeping tabs" and put tabs to sleep after 5 minutes.',
+        'Same page - Efficiency mode: "Maximum savings".',
+        'Same page - turn off "Continue running background extensions and apps when Microsoft Edge is closed".',
+        'Work sites that break when they sleep (for example Autotask): add [*.]autotask.net under "Never put these sites to sleep".',
+        'Shift+Esc inside Edge opens its own task manager - it shows exactly which tab or extension uses the most.'
+      ])));
+
+    // 5) Optional warning
+    root.append(h('div', { class: 'card' }, h('div', { class: 'opt' },
+      toggle(m.Watch, v => task('memWatch', async () => { await run('memWatch', { on: v }); S.cache.mem.Watch = v; toast(v ? 'You will get a notification when memory is almost full.' : 'Low-memory warning off.'); }), S.busy.memWatch),
+      h('div', { class: 't' }, h('b', { text: 'Warn me when memory is almost full' }),
+        h('div', { text: 'Checks every 15 minutes and shows a notification at 90% with the app using the most - so you can close something before anything crashes. It never closes anything itself.' })))));
+
+    root.append(h('div', { class: 'card' }, h('h3', {}, 'What the Memory saver does not do'),
+      bullets([
+        'No "RAM cleaner" - emptying RAM just makes Windows load everything again from disk, so it gets slower.',
+        'Never closes anything by itself, and never force-closes - apps always get the chance to ask you to save.',
+        'Never touches Windows, security, VPN or IT-management software, Edge, or anything on your Keep list.'
+      ])));
+  }
+};
+function loadMem() { return task('mem', async () => { S.cache.mem = await run('memStatus'); }); }
+async function setMemKeep(key, on) {
+  const keep = new Set(S.cache.mem.Keep || []);
+  if (on) keep.add(key); else keep.delete(key);
+  await saveSettings({ MemoryKeep: [...keep] });
+  S.sel.mem && S.sel.mem.delete(key);
+  loadMem();
+}
+async function closeMemApps() {
+  const apps = S.cache.mem.Apps.filter(a => S.sel.mem.has(a.Key) && a.Closable);
+  if (!apps.length) return;
+  if (!await confirmBox('Close ' + apps.length + ' app' + (apps.length > 1 ? 's' : '') + '?', [
+    bullets(apps.map(a => a.Label + ' - ' + fmtSize(a.WorkingSet))),
+    h('p', { text: 'Each app is asked to close, exactly like clicking its X. If something is not saved, it will ask you first - nothing is forced.' })
+  ], 'Close them')) return;
+  await task('memClose', async () => {
+    const r = await run('memClose', { names: apps.map(a => a.Key) }, prog('memClose'));
+    S.sel.mem = new Set();
+    const open = (r.StillOpen || []).map(k => (apps.find(a => a.Key === k) || {}).Label || k);
+    toast('Freed about ' + fmtSize(r.Freed) + '.' + (open.length ? ' Still open (maybe asking you to save): ' + open.join(', ') : ''), open.length ? 'warn' : '');
+    S.cache.mem = await run('memStatus');
+  });
+}
+async function memFix(key, on) {
+  const what = key === 'PageFile' ? 'Let Windows manage the page file?' : 'Turn on memory compression?';
+  if (!await confirmBox(what, 'This is a Windows setting. The original is saved and can be put back with one click. Takes effect after a restart.', 'Change it')) return;
+  await task('memFix', async () => { S.cache.mem = await run('memFix', { key, on }); toast('Done - restart the PC to finish.'); });
 }
 
 // ----- Apps
